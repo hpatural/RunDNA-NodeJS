@@ -1,0 +1,21 @@
+{
+  "name": "run-dna-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RunDNA backend API (auth MVP)",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "lint": "node -e \"console.log('No lint configured yet')\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "dotenv": "^16.4.5",
+    "fastify": "^5.0.0",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
