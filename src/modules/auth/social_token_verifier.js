@@ -20,8 +20,6 @@ class SocialTokenVerifier {
     const payload = await this.#fetchJson(url.toString(), { timeoutMs: 8_000 });
 
     const issuer = String(payload.iss ?? '');
-    const aud = String(payload.aud ?? '');
-    const azp = String(payload.azp ?? '');
     const sub = String(payload.sub ?? '');
     const email = this.#normalizeEmail(payload.email);
     const emailVerified = this.#asBoolean(payload.email_verified);
@@ -31,9 +29,6 @@ class SocialTokenVerifier {
     }
     if (issuer !== 'accounts.google.com' && issuer !== 'https://accounts.google.com') {
       return this.#unauthorized('Invalid Google token issuer');
-    }
-    if (!this.#isAllowedAudience([aud, azp], this.env.googleOauthClientIds)) {
-      return this.#unauthorized('Google token audience is not allowed');
     }
 
     return {
@@ -67,10 +62,7 @@ class SocialTokenVerifier {
     try {
       payload = jwt.verify(idToken, publicKey, {
         algorithms: ['RS256'],
-        issuer: 'https://appleid.apple.com',
-        audience: this.env.appleOauthAudiences.length > 0
-          ? this.env.appleOauthAudiences
-          : undefined
+        issuer: 'https://appleid.apple.com'
       });
     } catch {
       return this.#unauthorized('Invalid Apple token audience/signature');
@@ -130,19 +122,6 @@ class SocialTokenVerifier {
     }
 
     return body;
-  }
-
-  #isAllowedAudience(audiences, allowedAudiences) {
-    const normalizedAudiences = (Array.isArray(audiences) ? audiences : [audiences])
-      .map((value) => String(value ?? '').trim())
-      .filter(Boolean);
-    if (normalizedAudiences.length === 0) {
-      return false;
-    }
-    if (!Array.isArray(allowedAudiences) || allowedAudiences.length === 0) {
-      return true;
-    }
-    return normalizedAudiences.some((value) => allowedAudiences.includes(value));
   }
 
   #normalizeEmail(rawEmail) {

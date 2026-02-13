@@ -22,14 +22,6 @@ const env = {
   jwtRefreshSecret: requireEnv('JWT_REFRESH_SECRET', 'change_me_refresh_secret'),
   jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
   jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? '30d',
-  googleOauthClientIds: String(process.env.GOOGLE_OAUTH_CLIENT_IDS ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean),
-  appleOauthAudiences: String(process.env.APPLE_OAUTH_AUDIENCES ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean),
   stravaClientId: process.env.STRAVA_CLIENT_ID ?? '',
   stravaClientSecret: process.env.STRAVA_CLIENT_SECRET ?? '',
   stravaRedirectUri: process.env.STRAVA_REDIRECT_URI ?? '',
