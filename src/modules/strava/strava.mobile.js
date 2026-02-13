@@ -753,6 +753,9 @@ function classifySessionType(activity, analysis, baseline) {
     metrics.trainingLoad,
     { higherIsBetter: true }
   );
+  const variablePacing =
+    pacingStability <= 48 ||
+    (Math.abs(pacePct - 50) >= 28 && intensityScore >= 62);
 
   if (intensityScore <= 42 && recoveryCost <= 40) {
     return 'recovery';
@@ -773,16 +776,23 @@ function classifySessionType(activity, analysis, baseline) {
   if (
     intensityScore >= 80 ||
     effortPct >= 85 ||
-    (pacePct >= 80 && intensityScore >= 70 && recoveryCost >= 68)
+    (pacePct >= 80 && intensityScore >= 70 && recoveryCost >= 68) ||
+    (variablePacing && intensityScore >= 66 && pacePct >= 68)
   ) {
-    return 'intervals';
+    if (distanceKm <= 8.5 || durationMin <= 42) {
+      return 'intervals_short';
+    }
+    if (distanceKm <= 16 || durationMin <= 85) {
+      return 'intervals_long';
+    }
+    return 'intervals_long';
   }
 
   if (
     intensityScore >= 62 &&
     intensityScore < 82 &&
     pacePct >= 58 &&
-    pacingStability >= 50
+    pacingStability >= 52
   ) {
     return 'tempo';
   }
