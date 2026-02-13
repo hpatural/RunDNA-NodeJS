@@ -246,6 +246,7 @@ class PostgresStravaRepository {
         SELECT activity_id, name, sport_type, type, start_date, timezone,
                moving_time_sec, elapsed_time_sec, distance_m, total_elevation_gain_m,
                average_speed_mps, max_speed_mps, average_heartrate, max_heartrate, relative_effort_score,
+               raw_payload,
                trainer, commute, manual, kudos_count, achievement_count
         FROM strava_activities
         WHERE ${conditions.join(' AND ')}
@@ -400,6 +401,7 @@ class PostgresStravaRepository {
       averageHeartRate: row.average_heartrate ? Number(row.average_heartrate) : null,
       maxHeartRate: row.max_heartrate ? Number(row.max_heartrate) : null,
       relativeEffortScore: row.relative_effort_score ? Number(row.relative_effort_score) : null,
+      rawPayload: row.raw_payload ?? null,
       trainer: Boolean(row.trainer),
       commute: Boolean(row.commute),
       manual: Boolean(row.manual),

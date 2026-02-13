@@ -41,6 +41,7 @@ const env = {
   stravaTokenRefreshIntervalMinutes: Number(process.env.STRAVA_TOKEN_REFRESH_INTERVAL_MINUTES ?? 10),
   stravaSyncIntervalMinutes: Number(process.env.STRAVA_SYNC_INTERVAL_MINUTES ?? 30),
   stravaSyncMaxPages: Number(process.env.STRAVA_SYNC_MAX_PAGES ?? 10),
+  stravaDetailFetchMaxPerSync: Number(process.env.STRAVA_DETAIL_FETCH_MAX_PER_SYNC ?? 80),
   stravaEnableScheduledSync: String(process.env.STRAVA_ENABLE_SCHEDULED_SYNC ?? 'false') === 'true',
   stravaAutoSyncOnRead: String(process.env.STRAVA_AUTO_SYNC_ON_READ ?? 'false') === 'true',
   stravaAutoSyncReadStaleMinutes: Number(process.env.STRAVA_AUTO_SYNC_READ_STALE_MINUTES ?? 15)

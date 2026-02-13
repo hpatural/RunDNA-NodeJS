@@ -152,6 +152,8 @@ class StravaService {
 
     let page = 1;
     const collected = [];
+    let detailFetched = 0;
+    const detailFetchLimit = Math.max(0, Number(this.env.stravaDetailFetchMaxPerSync ?? 0));
     while (page <= this.env.stravaSyncMaxPages) {
       const pageItems = await this.client.fetchAthleteActivities(connection.accessToken, {
         after,
@@ -162,7 +164,30 @@ class StravaService {
         break;
       }
       const runnableItems = pageItems.filter((item) => this.#isSupportedSport(item));
-      collected.push(...runnableItems.map((item) => this.#mapStravaActivity(item)));
+      for (const item of runnableItems) {
+        let source = item;
+        if (detailFetched < detailFetchLimit && this.#shouldFetchActivityDetail(item)) {
+          try {
+            const detail = await this.client.fetchActivityDetails(
+              connection.accessToken,
+              item.id
+            );
+            if (detail && typeof detail === 'object') {
+              source = {
+                ...item,
+                ...detail
+              };
+              detailFetched += 1;
+            }
+          } catch (error) {
+            this.logger.warn(
+              { err: error, activityId: item?.id },
+              'Strava detail fetch failed; falling back to summary payload'
+            );
+          }
+        }
+        collected.push(this.#mapStravaActivity(source));
+      }
       if (pageItems.length < 100) {
         break;
       }
@@ -483,6 +508,15 @@ class StravaService {
   #isSupportedSport(activity) {
     const sportType = String(activity?.sport_type ?? activity?.type ?? '');
     return SUPPORTED_STRAVA_SPORTS.includes(sportType);
+  }
+
+  #shouldFetchActivityDetail(activity) {
+    const movingTimeSec = Number(activity?.moving_time ?? 0);
+    const distanceM = Number(activity?.distance ?? 0);
+    return movingTimeSec > 0 && (
+      movingTimeSec <= (95 * 60) ||
+      distanceM <= 20_000
+    );
   }
 
   #normalizeRelayUri(relayUri) {

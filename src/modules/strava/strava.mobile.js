@@ -753,11 +753,18 @@ function classifySessionType(activity, analysis, baseline) {
     metrics.trainingLoad,
     { higherIsBetter: true }
   );
+  const splitPatternScore = Number(metrics.splitPatternScore ?? 0);
+  const splitTransitionCount = Number(metrics.splitTransitionCount ?? 0);
+  const fastSplitCount = Number(metrics.fastSplitCount ?? 0);
+  const hasIntervalPattern =
+    splitPatternScore >= 58 ||
+    (splitTransitionCount >= 2 && fastSplitCount >= 2);
   const variablePacing =
     pacingStability <= 48 ||
-    (Math.abs(pacePct - 50) >= 28 && intensityScore >= 62);
+    (Math.abs(pacePct - 50) >= 28 && intensityScore >= 62) ||
+    hasIntervalPattern;
 
-  if (intensityScore <= 42 && recoveryCost <= 40) {
+  if (intensityScore <= 42 && recoveryCost <= 40 && !hasIntervalPattern) {
     return 'recovery';
   }
 
@@ -777,7 +784,8 @@ function classifySessionType(activity, analysis, baseline) {
     intensityScore >= 80 ||
     effortPct >= 85 ||
     (pacePct >= 80 && intensityScore >= 70 && recoveryCost >= 68) ||
-    (variablePacing && intensityScore >= 66 && pacePct >= 68)
+    (variablePacing && intensityScore >= 66 && pacePct >= 64) ||
+    hasIntervalPattern
   ) {
     if (distanceKm <= 8.5 || durationMin <= 42) {
       return 'intervals_short';
@@ -1169,6 +1177,7 @@ function computeActivityMetrics(activity) {
   const hrRatio = averageHeartRate > 0 ? Math.min(1.08, averageHeartRate / 190) : 0.65;
   const relativeEffortLoad = relativeEffortScore > 0 ? (relativeEffortScore * 0.8) : 0;
   const trainingLoad = (durationMinutes * (1 + hrRatio * 1.9)) + (elevationGain / 85) + relativeEffortLoad;
+  const splitPattern = computeSplitPattern(activity?.rawPayload);
 
   return {
     distanceKm,
@@ -1179,8 +1188,116 @@ function computeActivityMetrics(activity) {
     relativeEffortScore: relativeEffortScore > 0 ? relativeEffortScore : 0,
     elevationGain,
     elevationPerKm: elevationPerKmValue,
-    trainingLoad
+    trainingLoad,
+    splitPatternScore: splitPattern.patternScore,
+    splitTransitionCount: splitPattern.transitionCount,
+    fastSplitCount: splitPattern.fastCount
   };
+}
+
+function computeSplitPattern(rawPayload) {
+  const splitSamples = extractSplitSamples(rawPayload);
+  if (splitSamples.length < 3) {
+    return {
+      patternScore: 0,
+      transitionCount: 0,
+      fastCount: 0
+    };
+  }
+
+  const speeds = splitSamples.map((item) => item.speedMps).filter((value) => value > 0);
+  if (speeds.length < 3) {
+    return {
+      patternScore: 0,
+      transitionCount: 0,
+      fastCount: 0
+    };
+  }
+
+  const medianSpeed = median(speeds);
+  if (medianSpeed <= 0) {
+    return {
+      patternScore: 0,
+      transitionCount: 0,
+      fastCount: 0
+    };
+  }
+
+  const fastThreshold = medianSpeed * 1.06;
+  const easyThreshold = medianSpeed * 0.94;
+  const classified = speeds.map((speed) => {
+    if (speed >= fastThreshold) {
+      return 1;
+    }
+    if (speed <= easyThreshold) {
+      return -1;
+    }
+    return 0;
+  });
+
+  let transitionCount = 0;
+  let previousNonZero = 0;
+  for (const cls of classified) {
+    if (cls === 0) {
+      continue;
+    }
+    if (previousNonZero !== 0 && cls !== previousNonZero) {
+      transitionCount += 1;
+    }
+    previousNonZero = cls;
+  }
+
+  const fastCount = classified.filter((value) => value === 1).length;
+  const easyCount = classified.filter((value) => value === -1).length;
+  const paceCv = coefficientOfVariation(speeds);
+  const speedDeltaPct = medianSpeed > 0
+    ? ((Math.max(...speeds) - Math.min(...speeds)) / medianSpeed) * 100
+    : 0;
+
+  const patternScore = clampScore(weightedScore([
+    { score: clampScore(speedDeltaPct * 1.2), weight: 0.42 },
+    { score: clampScore(paceCv * 360), weight: 0.28 },
+    { score: clampScore((transitionCount / Math.max(classified.length - 1, 1)) * 170), weight: 0.2 },
+    { score: clampScore(((fastCount + easyCount) / classified.length) * 100), weight: 0.1 }
+  ]));
+
+  return {
+    patternScore,
+    transitionCount,
+    fastCount
+  };
+}
+
+function extractSplitSamples(rawPayload) {
+  if (!rawPayload || typeof rawPayload !== 'object') {
+    return [];
+  }
+
+  const fromSplitsMetric = Array.isArray(rawPayload.splits_metric)
+    ? rawPayload.splits_metric
+    : [];
+  const fromLaps = Array.isArray(rawPayload.laps)
+    ? rawPayload.laps
+    : [];
+  const source = fromSplitsMetric.length > 0 ? fromSplitsMetric : fromLaps;
+
+  const samples = [];
+  for (const split of source) {
+    const distanceM = Number(split?.distance ?? 0);
+    const movingTimeSec = Number(split?.moving_time ?? split?.elapsed_time ?? 0);
+    const avgSpeedMps = Number(split?.average_speed ?? 0);
+    const computedSpeed = movingTimeSec > 0 ? distanceM / movingTimeSec : 0;
+    const speedMps = avgSpeedMps > 0 ? avgSpeedMps : computedSpeed;
+    if (distanceM < 350 || speedMps <= 0) {
+      continue;
+    }
+    samples.push({
+      distanceM,
+      speedMps
+    });
+  }
+
+  return samples;
 }
 
 function weightedScore(entries) {

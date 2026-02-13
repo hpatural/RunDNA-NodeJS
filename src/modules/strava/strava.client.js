@@ -63,6 +63,24 @@ class StravaApiClient {
     return response;
   }
 
+  async fetchActivityDetails(accessToken, activityId) {
+    const url = new URL(`/api/v3/activities/${encodeURIComponent(String(activityId))}`, this.env.stravaBaseUrl);
+    url.searchParams.set('include_all_efforts', 'true');
+
+    const response = await this.#fetchJson(url.toString(), {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    });
+
+    if (!response || typeof response !== 'object') {
+      throw this.#buildApiError('Unexpected Strava activity detail response', 502);
+    }
+
+    return response;
+  }
+
   async #requestToken(body) {
     const payload = {
       ...body,
