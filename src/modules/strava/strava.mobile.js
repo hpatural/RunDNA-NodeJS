@@ -111,6 +111,7 @@ function buildAbsoluteActivityAnalysis(activity) {
 function toEnrichedActivity(activity, { baseline } = {}) {
   const paceMinPerKm = computePaceMinPerKm(activity);
   const averageHeartRate = Number(activity.averageHeartRate ?? 0);
+  const analysis = buildActivityAnalysis(activity, { baseline });
   return {
     id: String(activity.activityId),
     provider: 'strava',
@@ -120,7 +121,8 @@ function toEnrichedActivity(activity, { baseline } = {}) {
     paceMinPerKm: paceMinPerKm > 0 ? round2(paceMinPerKm) : 0,
     elevationGain: Math.round(Number(activity.totalElevationGainM ?? 0)),
     avgHeartRate: averageHeartRate > 0 ? Math.round(averageHeartRate) : 0,
-    analysis: buildActivityAnalysis(activity, { baseline })
+    sessionType: classifySessionType(activity, analysis, baseline),
+    analysis
   };
 }
 
@@ -638,18 +640,70 @@ function computeIntensityDistribution(activities, baseline) {
     };
   }
 
+  const scored = list.map((item) => {
+    const analysis = buildActivityAnalysis(item, { baseline });
+    const metrics = computeActivityMetrics(item);
+    return {
+      intensityScore: Number(analysis.intensityScore ?? 0),
+      recoveryCost: Number(analysis.recoveryCost ?? 0),
+      relativeEffortScore: Number(metrics.relativeEffortScore ?? 0),
+      sessionLoadScore: 0
+    };
+  });
+
+  const intensitySeries = scored.map((item) => item.intensityScore);
+  const recoverySeries = scored.map((item) => item.recoveryCost);
+  const effortSeries = scored
+    .map((item) => item.relativeEffortScore)
+    .filter((value) => value > 0);
+
+  for (const item of scored) {
+    const intensityPct = percentileScore(intensitySeries, item.intensityScore, { higherIsBetter: true });
+    const recoveryPct = percentileScore(recoverySeries, item.recoveryCost, { higherIsBetter: true });
+    const effortPct = percentileScore(effortSeries, item.relativeEffortScore, { higherIsBetter: true });
+
+    item.intensityPct = intensityPct;
+    item.recoveryPct = recoveryPct;
+    item.effortPct = effortPct;
+    item.sessionLoadScore = weightedScore([
+      { score: intensityPct, weight: 0.45 },
+      { score: recoveryPct, weight: 0.35 },
+      { score: effortPct, weight: 0.2 }
+    ]);
+  }
+
   let easy = 0;
   let moderate = 0;
   let hard = 0;
 
-  for (const item of list) {
-    const score = buildActivityAnalysis(item, { baseline }).intensityScore;
-    if (score < 45) {
-      easy += 1;
-    } else if (score < 70) {
-      moderate += 1;
-    } else {
+  for (const item of scored) {
+    const hardSession =
+      item.sessionLoadScore >= 78 ||
+      (item.intensityPct >= 72 && item.recoveryPct >= 70) ||
+      (item.effortPct >= 80 && item.intensityPct >= 65);
+    const easySession =
+      item.sessionLoadScore <= 35 &&
+      item.intensityPct <= 45 &&
+      item.recoveryPct <= 45;
+
+    if (hardSession) {
       hard += 1;
+    } else if (easySession) {
+      easy += 1;
+    } else {
+      moderate += 1;
+    }
+  }
+
+  if (hard === 0 && scored.length >= 6) {
+    const top = [...scored].sort((a, b) => b.sessionLoadScore - a.sessionLoadScore)[0];
+    if (top && top.sessionLoadScore >= 66) {
+      hard = 1;
+      if (moderate > 0) {
+        moderate -= 1;
+      } else if (easy > 0) {
+        easy -= 1;
+      }
     }
   }
 
@@ -660,6 +714,84 @@ function computeIntensityDistribution(activities, baseline) {
     hardPct: Math.round((hard / total) * 100),
     sampleCount: total
   };
+}
+
+function classifySessionType(activity, analysis, baseline) {
+  const metrics = computeActivityMetrics(activity);
+
+  const durationMin = Number(metrics.durationMinutes ?? 0);
+  const distanceKm = Number(metrics.distanceKm ?? 0);
+  const elevationDensity = Number(metrics.elevationPerKm ?? 0);
+  const intensityScore = Number(analysis?.intensityScore ?? 0);
+  const enduranceLoad = Number(analysis?.enduranceLoad ?? 0);
+  const pacingStability = Number(analysis?.pacingStability ?? 0);
+  const recoveryCost = Number(analysis?.recoveryCost ?? 0);
+  const relativeEffort = Number(metrics.relativeEffortScore ?? 0);
+
+  const pacePct = percentileScore(
+    baseline?.series?.speedMps,
+    metrics.speedMps,
+    { higherIsBetter: true }
+  );
+  const effortPct = percentileScore(
+    baseline?.series?.relativeEffort,
+    relativeEffort,
+    { higherIsBetter: true }
+  );
+  const durationPct = percentileScore(
+    baseline?.series?.durationMinutes,
+    durationMin,
+    { higherIsBetter: true }
+  );
+  const elevationPct = percentileScore(
+    baseline?.series?.elevationPerKm,
+    elevationDensity,
+    { higherIsBetter: true }
+  );
+  const loadPct = percentileScore(
+    baseline?.series?.trainingLoad,
+    metrics.trainingLoad,
+    { higherIsBetter: true }
+  );
+
+  if (intensityScore <= 42 && recoveryCost <= 40) {
+    return 'recovery';
+  }
+
+  if (
+    durationMin >= 80 ||
+    distanceKm >= 17 ||
+    (durationPct >= 78 && enduranceLoad >= 62 && intensityScore <= 72)
+  ) {
+    return elevationDensity >= 22 ? 'long_trail' : 'long_run';
+  }
+
+  if (elevationDensity >= 28 || (elevationPct >= 82 && intensityScore >= 55)) {
+    return 'hills';
+  }
+
+  if (
+    intensityScore >= 80 ||
+    effortPct >= 85 ||
+    (pacePct >= 80 && intensityScore >= 70 && recoveryCost >= 68)
+  ) {
+    return 'intervals';
+  }
+
+  if (
+    intensityScore >= 62 &&
+    intensityScore < 82 &&
+    pacePct >= 58 &&
+    pacingStability >= 50
+  ) {
+    return 'tempo';
+  }
+
+  if (loadPct >= 62 && intensityScore >= 55) {
+    return 'steady';
+  }
+
+  return 'easy';
 }
 
 function buildTrainingLoadBalance({ acuteLoad, chronicLoad, analysis }) {
