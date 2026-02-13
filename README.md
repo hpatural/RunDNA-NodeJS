@@ -24,6 +24,8 @@
 - `GET /v1/providers/strava/status` (Bearer token required)
 - `POST /v1/providers/strava/sync` (Bearer token required)
 - `GET /v1/analysis/strava?days=30` (Bearer token required)
+- `GET /v1/activities/enriched?limit=40&before=<iso>` (Bearer token required)
+- `GET /v1/dashboard/widgets?days=70&widgets=profile,fatigue,...` (Bearer token required)
 - `GET /v1/providers/strava/webhook` (Strava challenge endpoint)
 - `POST /v1/providers/strava/webhook` (Strava events endpoint)
 
@@ -63,7 +65,10 @@ Either
 Or
 - Mobile callback: app calls `POST /v1/providers/strava/oauth/exchange` with `{ "code": "..." }`.
 5. Trigger sync with `POST /v1/providers/strava/sync`.
-6. Read insights via `GET /v1/analysis/strava?days=30`.
+6. Lire les données app:
+   - Feed activités enrichies: `GET /v1/activities/enriched`
+   - Widgets dashboard: `GET /v1/dashboard/widgets`
+   - Analyse brute Strava (optionnel): `GET /v1/analysis/strava?days=30`
 
 ## Analysis output
 `GET /v1/analysis/strava` returns:

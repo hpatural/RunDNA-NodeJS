@@ -26,7 +26,8 @@ class StravaApiClient {
   async exchangeCodeForToken(code) {
     return this.#requestToken({
       grant_type: 'authorization_code',
-      code
+      code,
+      redirect_uri: this.env.stravaRedirectUri
     });
   }
 

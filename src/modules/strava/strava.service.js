@@ -27,12 +27,14 @@ class StravaService {
     }
   }
 
-  createAuthorizationUrl(userId) {
+  createAuthorizationUrl(userId, { relayUri } = {}) {
     this.ensureConfigured();
+    const normalizedRelayUri = this.#normalizeRelayUri(relayUri);
     const state = jwt.sign(
       {
         sub: userId,
-        provider: 'strava'
+        provider: 'strava',
+        relayUri: normalizedRelayUri
       },
       this.env.stravaStateSecret,
       { expiresIn: '10m' }
@@ -65,7 +67,7 @@ class StravaService {
     return this.#sanitizeConnection(connection);
   }
 
-  async exchangeCodeFromState({ code, state }) {
+  async exchangeCodeFromState({ code, state, withMeta = false }) {
     this.ensureConfigured();
     if (!state || typeof state !== 'string') {
       const error = new Error('Missing OAuth state');
@@ -88,10 +90,17 @@ class StravaService {
       throw error;
     }
 
-    return this.exchangeCodeForUser({
+    const connection = await this.exchangeCodeForUser({
       userId: decoded.sub,
       code
     });
+    if (!withMeta) {
+      return connection;
+    }
+    return {
+      connection,
+      relayUri: this.#normalizeRelayUri(decoded.relayUri)
+    };
   }
 
   async getConnectionStatus(userId) {
@@ -352,6 +361,21 @@ class StravaService {
       achievementCount: Number(activity.achievement_count ?? 0),
       rawPayload: activity
     };
+  }
+
+  #normalizeRelayUri(relayUri) {
+    if (!relayUri || typeof relayUri !== 'string') {
+      return null;
+    }
+    try {
+      const parsed = new URL(relayUri);
+      if (parsed.protocol !== 'rundna:') {
+        return null;
+      }
+      return parsed.toString();
+    } catch (_error) {
+      return null;
+    }
   }
 }
 

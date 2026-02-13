@@ -4,21 +4,33 @@ async function stravaRoutes(fastify) {
   fastify.get('/providers/strava/oauth/start', {
     preHandler: [fastify.authenticate]
   }, async (request) => {
-    return stravaService.createAuthorizationUrl(request.user.id);
+    return stravaService.createAuthorizationUrl(request.user.id, {
+      relayUri: request.query?.relayUri
+    });
   });
 
-  fastify.get('/providers/strava/oauth/callback', async (request) => {
+  fastify.get('/providers/strava/oauth/callback', async (request, reply) => {
     const { code, state, error: providerError } = request.query ?? {};
     if (providerError) {
       const err = new Error(`Strava authorization failed: ${providerError}`);
       err.statusCode = 400;
       throw err;
     }
-    const connection = await stravaService.exchangeCodeFromState({ code, state });
+    const result = await stravaService.exchangeCodeFromState({
+      code,
+      state,
+      withMeta: true
+    });
+    if (result.relayUri) {
+      const redirect = new URL(result.relayUri);
+      redirect.searchParams.set('provider', 'strava');
+      redirect.searchParams.set('connected', 'true');
+      return reply.redirect(302, redirect.toString());
+    }
     return {
       connected: true,
       provider: 'strava',
-      connection
+      connection: result.connection
     };
   });
 
