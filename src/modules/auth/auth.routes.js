@@ -2,7 +2,7 @@ async function authRoutes(fastify) {
   const authService = fastify.authService;
 
   fastify.post('/auth/register', async (request, reply) => {
-    const result = authService.register(request.body ?? {});
+    const result = await authService.register(request.body ?? {});
     return reply.code(201).send(result);
   });
 
@@ -23,7 +23,7 @@ async function authRoutes(fastify) {
   fastify.get('/me', {
     preHandler: [fastify.authenticate]
   }, async (request) => {
-    const user = authService.repository.findUserById(request.user.id);
+    const user = await authService.repository.findUserById(request.user.id);
     if (!user) {
       const error = new Error('User not found');
       error.statusCode = 404;

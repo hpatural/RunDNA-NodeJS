@@ -13,11 +13,11 @@ class AuthService {
     this.env = env;
   }
 
-  register({ email, password }) {
+  async register({ email, password }) {
     this.validateCredentials({ email, password });
 
     const normalizedEmail = email.trim().toLowerCase();
-    if (this.repository.findUserByEmail(normalizedEmail)) {
+    if (await this.repository.findUserByEmail(normalizedEmail)) {
       const error = new Error('Account already exists');
       error.statusCode = 409;
       throw error;
@@ -30,15 +30,15 @@ class AuthService {
       createdAt: new Date().toISOString()
     };
 
-    this.repository.createUser(user);
-    return this.issueTokens(user);
+    const createdUser = await this.repository.createUser(user);
+    return this.issueTokens(createdUser);
   }
 
-  login({ email, password }) {
+  async login({ email, password }) {
     this.validateCredentials({ email, password, strictPassword: false });
 
     const normalizedEmail = email.trim().toLowerCase();
-    const user = this.repository.findUserByEmail(normalizedEmail);
+    const user = await this.repository.findUserByEmail(normalizedEmail);
     if (!user || !verifyPassword(password, user.passwordHash)) {
       const error = new Error('Invalid credentials');
       error.statusCode = 401;
@@ -48,7 +48,7 @@ class AuthService {
     return this.issueTokens(user);
   }
 
-  refresh({ refreshToken }) {
+  async refresh({ refreshToken }) {
     if (!refreshToken) {
       const error = new Error('Refresh token is required');
       error.statusCode = 400;
@@ -64,14 +64,14 @@ class AuthService {
       throw error;
     }
 
-    const stored = this.repository.getRefreshToken(decoded.sub);
+    const stored = await this.repository.getRefreshToken(decoded.sub);
     if (!stored || stored !== refreshToken) {
       const error = new Error('Refresh token revoked');
       error.statusCode = 401;
       throw error;
     }
 
-    const user = this.repository.findUserById(decoded.sub);
+    const user = await this.repository.findUserById(decoded.sub);
     if (!user) {
       const error = new Error('User not found');
       error.statusCode = 404;
@@ -81,8 +81,8 @@ class AuthService {
     return this.issueTokens(user);
   }
 
-  logout(userId) {
-    this.repository.clearRefreshToken(userId);
+  async logout(userId) {
+    await this.repository.clearRefreshToken(userId);
     return { success: true };
   }
 
@@ -94,12 +94,12 @@ class AuthService {
     };
   }
 
-  issueTokens(user) {
+  async issueTokens(user) {
     const payload = { sub: user.id, email: user.email };
     const accessToken = signAccessToken(payload, this.env);
     const refreshToken = signRefreshToken(payload, this.env);
 
-    this.repository.saveRefreshToken(user.id, refreshToken);
+    await this.repository.saveRefreshToken(user.id, refreshToken);
 
     return {
       user: this.sanitizeUser(user),

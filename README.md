@@ -4,9 +4,11 @@
 - Node.js 20+
 - Fastify
 - JWT access/refresh tokens
-- In-memory user store (to be replaced by DB)
+- PostgreSQL (auto schema init if `DATABASE_URL` is set)
+- In-memory fallback when `DATABASE_URL` is empty
 
 ## Endpoints
+- `GET /` (landing page with app download placeholder + fake QR)
 - `GET /health`
 - `POST /v1/auth/register`
 - `POST /v1/auth/login`
@@ -16,7 +18,6 @@
 
 ## Quick start
 ```bash
-cd nodejs
 cp .env.example .env
 npm install
 npm run dev
@@ -50,10 +51,13 @@ Refresh:
 - Runtime: Node
 - Build command: `npm install`
 - Start command: `npm start`
-- Env vars: copy from `.env.example` (use strong JWT secrets in production)
+- Env vars:
+  - `DATABASE_URL` from Render PostgreSQL
+  - `DATABASE_SSL=true` if SSL is required by your DB endpoint
+  - `JWT_ACCESS_SECRET` strong value
+  - `JWT_REFRESH_SECRET` strong value
 
 ## Next backend steps
-1. Replace in-memory repository by PostgreSQL.
-2. Add persistent refresh-token table.
-3. Add OAuth provider tables (Strava, Apple, Google).
-4. Expose `/v1/providers`, `/v1/dashboard`, `/v1/activities` with DB-backed data.
+1. Add OAuth provider tables (Strava, Apple, Google).
+2. Expose `/v1/providers`, `/v1/dashboard`, `/v1/activities` with DB-backed data.
+3. Add migrations tooling (Prisma/Knex/Drizzle) for versioned schema changes.

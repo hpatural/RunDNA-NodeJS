@@ -15,6 +15,8 @@ const env = {
   port: Number(process.env.PORT ?? 3000),
   host: process.env.HOST ?? '0.0.0.0',
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
+  databaseUrl: process.env.DATABASE_URL ?? '',
+  databaseSsl: String(process.env.DATABASE_SSL ?? 'false') === 'true',
   jwtAccessSecret: requireEnv('JWT_ACCESS_SECRET', 'change_me_access_secret'),
   jwtRefreshSecret: requireEnv('JWT_REFRESH_SECRET', 'change_me_refresh_secret'),
   jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
