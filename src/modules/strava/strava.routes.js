@@ -94,6 +94,13 @@ async function stravaRoutes(fastify) {
     });
   });
 
+  fastify.get('/activities/:activityId/detail', {
+    preHandler: [fastify.authenticate]
+  }, async (request) => {
+    const activityId = String(request.params?.activityId ?? '');
+    return stravaService.getActivityDetail(request.user.id, { activityId });
+  });
+
   fastify.get('/dashboard/widgets', {
     preHandler: [fastify.authenticate]
   }, async (request) => {

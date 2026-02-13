@@ -131,6 +131,12 @@ class StravaRepository {
     return latest?.startDate ?? null;
   }
 
+  async getActivityById(userId, activityId) {
+    const all = this.activitiesByUserId.get(userId) ?? [];
+    const match = all.find((item) => String(item.activityId) === String(activityId));
+    return match ?? null;
+  }
+
   async recordWebhookEvent(event) {
     this.webhookEvents.push({
       receivedAt: new Date().toISOString(),

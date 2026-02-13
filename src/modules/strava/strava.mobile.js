@@ -126,6 +126,110 @@ function toEnrichedActivity(activity, { baseline } = {}) {
   };
 }
 
+function buildSessionDetail(activity, { baseline, recentActivities = [] } = {}) {
+  const enriched = toEnrichedActivity(activity, { baseline });
+  const metrics = computeActivityMetrics(activity);
+  const splitInsights = buildSplitInsights(activity?.rawPayload);
+  const sessionType = enriched.sessionType;
+
+  const intensityPct = percentileScore(
+    baseline?.series?.trainingLoad,
+    metrics.trainingLoad,
+    { higherIsBetter: true }
+  );
+  const pacePct = percentileScore(
+    baseline?.series?.speedMps,
+    metrics.speedMps,
+    { higherIsBetter: true }
+  );
+  const durationPct = percentileScore(
+    baseline?.series?.durationMinutes,
+    metrics.durationMinutes,
+    { higherIsBetter: true }
+  );
+
+  const confidence = clampScore(weightedScore([
+    { score: 45 + (splitInsights.patternScore * 0.45), weight: 0.4 },
+    { score: enriched.analysis.intensityScore, weight: 0.3 },
+    { score: Math.max(pacePct, intensityPct), weight: 0.2 },
+    { score: splitInsights.sampleCount >= 5 ? 82 : 55, weight: 0.1 }
+  ]));
+
+  const insightReasons = [];
+  if (splitInsights.sampleCount >= 3) {
+    insightReasons.push(
+      `${splitInsights.sampleCount} segments analysés, ${splitInsights.transitionCount} transitions allure rapide/lente.`
+    );
+    insightReasons.push(
+      `Écart d'allure interne ${splitInsights.paceDeltaPct.toFixed(1)}% (${splitInsights.fastestPaceLabel} -> ${splitInsights.slowestPaceLabel}).`
+    );
+  }
+  if (metrics.relativeEffortScore > 0) {
+    insightReasons.push(
+      `Effort relatif ${round1(metrics.relativeEffortScore)} (${intensityPct}e percentile personnel).`
+    );
+  }
+  insightReasons.push(
+    `Charge séance ${round1(metrics.trainingLoad)} (${durationPct}e pct durée, ${pacePct}e pct vitesse).`
+  );
+
+  const coaching = [];
+  if (enriched.analysis.recoveryCost >= 74) {
+    coaching.push('Prévois 24-48h très facile ensuite (Z1/Z2) pour absorber la charge.');
+  } else if (enriched.analysis.recoveryCost >= 60) {
+    coaching.push('Charge utile: garde la prochaine séance en endurance contrôlée.');
+  } else {
+    coaching.push('Séance assimilable: tu peux enchaîner avec une séance de qualité légère.');
+  }
+
+  if (sessionType === 'intervals_short' || sessionType === 'intervals_long') {
+    coaching.push('Structure fractionnée détectée: pense à calibrer la récup entre répétitions.');
+  } else if (sessionType === 'tempo') {
+    coaching.push('Bon travail au seuil: vise une allure stable sur les blocs tempo.');
+  } else if (sessionType === 'hills') {
+    coaching.push('Séance spécifique D+: surveille la descente et la fatigue musculaire.');
+  }
+
+  const recentWindow = Array.isArray(recentActivities)
+    ? recentActivities.slice(0, 12)
+    : [];
+  const recentAvgLoad = recentWindow.length > 0
+    ? sum(recentWindow, (item) => computeActivityMetrics(item).trainingLoad) / recentWindow.length
+    : 0;
+  const loadVsRecentPct = recentAvgLoad > 0
+    ? round1(((metrics.trainingLoad - recentAvgLoad) / recentAvgLoad) * 100)
+    : 0;
+
+  return {
+    activity: {
+      ...enriched,
+      name: activity?.name ?? ''
+    },
+    ai: {
+      model: 'rundna-session-analyzer-v1',
+      confidence,
+      sessionType,
+      sessionLabel: sessionTypeLabelFr(sessionType),
+      summary: buildSessionSummaryFr({
+        sessionType,
+        splitInsights,
+        analysis: enriched.analysis,
+        durationMinutes: enriched.durationMinutes,
+        distanceKm: enriched.distanceKm
+      }),
+      reasons: insightReasons.slice(0, 4),
+      coaching: coaching.slice(0, 3)
+    },
+    splits: splitInsights,
+    comparisons: {
+      loadPercentile: intensityPct,
+      pacePercentile: pacePct,
+      durationPercentile: durationPct,
+      loadVsRecentPct
+    }
+  };
+}
+
 function buildDashboardData({ userEmail, activities, analysis, baselineActivities }) {
   const recentActivities = activities.slice(0, 24);
   const currentWeek = filterCurrentWeekFromMonday(activities);
@@ -1025,6 +1129,13 @@ function paceToSpeedMps(paceMinKm) {
   return 1000 / (paceMinKm * 60);
 }
 
+function paceFromSpeedMps(speedMps) {
+  if (!speedMps || speedMps <= 0) {
+    return 0;
+  }
+  return 1000 / (speedMps * 60);
+}
+
 function elevationPerKm(activity) {
   const distanceKm = Number(activity.distanceM ?? 0) / 1000;
   if (distanceKm <= 0.4) {
@@ -1268,6 +1379,93 @@ function computeSplitPattern(rawPayload) {
   };
 }
 
+function buildSplitInsights(rawPayload) {
+  const splitSamples = extractSplitSamples(rawPayload);
+  if (splitSamples.length === 0) {
+    return {
+      sampleCount: 0,
+      patternScore: 0,
+      transitionCount: 0,
+      fastSplitCount: 0,
+      easySplitCount: 0,
+      paceDeltaPct: 0,
+      fastestPaceLabel: '0:00/km',
+      slowestPaceLabel: '0:00/km'
+    };
+  }
+
+  const speeds = splitSamples.map((item) => item.speedMps).filter((value) => value > 0);
+  const pattern = computeSplitPattern(rawPayload);
+  const medianSpeed = median(speeds);
+  const fastThreshold = medianSpeed * 1.06;
+  const easyThreshold = medianSpeed * 0.94;
+  const fastSplitCount = speeds.filter((speed) => speed >= fastThreshold).length;
+  const easySplitCount = speeds.filter((speed) => speed <= easyThreshold).length;
+  const maxSpeed = Math.max(...speeds);
+  const minSpeed = Math.min(...speeds);
+  const paceDeltaPct = medianSpeed > 0
+    ? round1(((maxSpeed - minSpeed) / medianSpeed) * 100)
+    : 0;
+
+  return {
+    sampleCount: splitSamples.length,
+    patternScore: pattern.patternScore,
+    transitionCount: pattern.transitionCount,
+    fastSplitCount,
+    easySplitCount,
+    paceDeltaPct,
+    fastestPaceLabel: formatPace(paceFromSpeedMps(maxSpeed)),
+    slowestPaceLabel: formatPace(paceFromSpeedMps(minSpeed))
+  };
+}
+
+function sessionTypeLabelFr(sessionType) {
+  switch (sessionType) {
+    case 'recovery':
+      return 'Récupération';
+    case 'easy':
+      return 'Endurance facile';
+    case 'steady':
+      return 'Endurance active';
+    case 'tempo':
+      return 'Tempo / seuil';
+    case 'intervals_short':
+      return 'Fractionné court';
+    case 'intervals_long':
+      return 'Fractionné long';
+    case 'hills':
+      return 'Côtes / D+';
+    case 'long_run':
+      return 'Sortie longue';
+    case 'long_trail':
+      return 'Sortie longue trail';
+    default:
+      return 'Séance course';
+  }
+}
+
+function buildSessionSummaryFr({
+  sessionType,
+  splitInsights,
+  analysis,
+  durationMinutes,
+  distanceKm
+}) {
+  if (sessionType === 'intervals_short' || sessionType === 'intervals_long') {
+    return `Séance ${sessionType === 'intervals_short' ? 'fractionné court' : 'fractionné long'} détectée: ${splitInsights.transitionCount} transitions, intensité ${analysis.intensityScore}/100.`;
+  }
+  if (sessionType === 'tempo') {
+    return `Séance tempo (${distanceKm.toFixed(1)} km / ${durationMinutes} min) avec contrainte cardiorespiratoire utile.`;
+  }
+  if (sessionType === 'hills') {
+    return `Séance orientée dénivelé avec stress D+ ${analysis.elevationStress}/100.`;
+  }
+  if (sessionType === 'recovery') {
+    return 'Sortie de récupération confirmée: charge faible et coût récup limité.';
+  }
+  return `Séance ${sessionTypeLabelFr(sessionType).toLowerCase()} avec charge ${analysis.enduranceLoad}/100 et coût récup ${analysis.recoveryCost}/100.`;
+}
+
 function extractSplitSamples(rawPayload) {
   if (!rawPayload || typeof rawPayload !== 'object') {
     return [];
@@ -1376,6 +1574,7 @@ function round1(value) {
 
 module.exports = {
   toEnrichedActivity,
+  buildSessionDetail,
   buildDashboardData,
   pickWidgets,
   buildUserBaseline

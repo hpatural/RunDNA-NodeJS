@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const { analyzeStravaActivities } = require('./strava.analysis');
 const {
   toEnrichedActivity,
+  buildSessionDetail,
   buildDashboardData,
   pickWidgets,
   buildUserBaseline
@@ -257,6 +258,38 @@ class StravaService {
         ? pageItems[pageItems.length - 1]?.startDate ?? null
         : null
     };
+  }
+
+  async getActivityDetail(userId, { activityId }) {
+    await this.#autoSyncOnRead(userId);
+    if (!activityId || typeof activityId !== 'string') {
+      const error = new Error('Activity id is required');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const activity = await this.repository.getActivityById(userId, activityId);
+    if (!activity) {
+      const error = new Error('Activity not found');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const baselineStartDate = new Date(
+      Date.now() - 120 * 24 * 60 * 60 * 1000
+    ).toISOString();
+    const baselineRows = await this.repository.getActivities(userId, {
+      startDate: baselineStartDate,
+      limit: 3000,
+      sportTypes: SUPPORTED_STRAVA_SPORTS
+    });
+    const baseline = buildUserBaseline(baselineRows);
+    const recentRows = baselineRows.slice(0, 16);
+
+    return buildSessionDetail(activity, {
+      baseline,
+      recentActivities: recentRows
+    });
   }
 
   async getDashboardWidgets(userId, { days = 70, widgetKeys = [] } = {}) {

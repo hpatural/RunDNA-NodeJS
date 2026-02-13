@@ -283,6 +283,22 @@ class PostgresStravaRepository {
     return new Date(result.rows[0].start_date).toISOString();
   }
 
+  async getActivityById(userId, activityId) {
+    const result = await this.pool.query(
+      `
+        SELECT activity_id, name, sport_type, type, start_date, timezone,
+               moving_time_sec, elapsed_time_sec, distance_m, total_elevation_gain_m,
+               average_speed_mps, max_speed_mps, average_heartrate, max_heartrate, relative_effort_score,
+               raw_payload, trainer, commute, manual, kudos_count, achievement_count
+        FROM strava_activities
+        WHERE user_id = $1 AND activity_id = $2
+        LIMIT 1
+      `,
+      [userId, activityId]
+    );
+    return result.rows[0] ? this.#mapActivity(result.rows[0]) : null;
+  }
+
   async recordWebhookEvent(event) {
     await this.pool.query(
       `
