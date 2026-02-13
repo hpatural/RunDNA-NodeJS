@@ -126,7 +126,8 @@ function toEnrichedActivity(activity, { baseline } = {}) {
   };
 }
 
-function buildSessionDetail(activity, { baseline, recentActivities = [] } = {}) {
+function buildSessionDetail(activity, { baseline, recentActivities = [], locale = 'fr' } = {}) {
+  const normalizedLocale = normalizeLocale(locale);
   const enriched = toEnrichedActivity(activity, { baseline });
   const metrics = computeActivityMetrics(activity);
   const splitInsights = buildSplitInsights(activity?.rawPayload);
@@ -158,36 +159,68 @@ function buildSessionDetail(activity, { baseline, recentActivities = [] } = {}) 
   const insightReasons = [];
   if (splitInsights.sampleCount >= 3) {
     insightReasons.push(
-      `${splitInsights.sampleCount} segments analysés, ${splitInsights.transitionCount} transitions allure rapide/lente.`
+      normalizedLocale === 'en'
+        ? `${splitInsights.sampleCount} segments analyzed, ${splitInsights.transitionCount} fast/slow pace transitions.`
+        : `${splitInsights.sampleCount} segments analysés, ${splitInsights.transitionCount} transitions allure rapide/lente.`
     );
     insightReasons.push(
-      `Écart d'allure interne ${splitInsights.paceDeltaPct.toFixed(1)}% (${splitInsights.fastestPaceLabel} -> ${splitInsights.slowestPaceLabel}).`
+      normalizedLocale === 'en'
+        ? `Intra-session pace spread ${splitInsights.paceDeltaPct.toFixed(1)}% (${splitInsights.fastestPaceLabel} -> ${splitInsights.slowestPaceLabel}).`
+        : `Écart d'allure interne ${splitInsights.paceDeltaPct.toFixed(1)}% (${splitInsights.fastestPaceLabel} -> ${splitInsights.slowestPaceLabel}).`
     );
   }
   if (metrics.relativeEffortScore > 0) {
     insightReasons.push(
-      `Effort relatif ${round1(metrics.relativeEffortScore)} (${intensityPct}e percentile personnel).`
+      normalizedLocale === 'en'
+        ? `Relative effort ${round1(metrics.relativeEffortScore)} (${intensityPct}th personal percentile).`
+        : `Effort relatif ${round1(metrics.relativeEffortScore)} (${intensityPct}e percentile personnel).`
     );
   }
   insightReasons.push(
-    `Charge séance ${round1(metrics.trainingLoad)} (${durationPct}e pct durée, ${pacePct}e pct vitesse).`
+    normalizedLocale === 'en'
+      ? `Session load ${round1(metrics.trainingLoad)} (${durationPct}th pct duration, ${pacePct}th pct speed).`
+      : `Charge séance ${round1(metrics.trainingLoad)} (${durationPct}e pct durée, ${pacePct}e pct vitesse).`
   );
 
   const coaching = [];
   if (enriched.analysis.recoveryCost >= 74) {
-    coaching.push('Prévois 24-48h très facile ensuite (Z1/Z2) pour absorber la charge.');
+    coaching.push(
+      normalizedLocale === 'en'
+        ? 'Plan 24-48h very easy (Z1/Z2) afterwards to absorb the load.'
+        : 'Prévois 24-48h très facile ensuite (Z1/Z2) pour absorber la charge.'
+    );
   } else if (enriched.analysis.recoveryCost >= 60) {
-    coaching.push('Charge utile: garde la prochaine séance en endurance contrôlée.');
+    coaching.push(
+      normalizedLocale === 'en'
+        ? 'Useful load: keep the next session controlled endurance.'
+        : 'Charge utile: garde la prochaine séance en endurance contrôlée.'
+    );
   } else {
-    coaching.push('Séance assimilable: tu peux enchaîner avec une séance de qualité légère.');
+    coaching.push(
+      normalizedLocale === 'en'
+        ? 'Session is manageable: you can follow with a light quality workout.'
+        : 'Séance assimilable: tu peux enchaîner avec une séance de qualité légère.'
+    );
   }
 
   if (sessionType === 'intervals_short' || sessionType === 'intervals_long') {
-    coaching.push('Structure fractionnée détectée: pense à calibrer la récup entre répétitions.');
+    coaching.push(
+      normalizedLocale === 'en'
+        ? 'Interval structure detected: calibrate recovery between reps.'
+        : 'Structure fractionnée détectée: pense à calibrer la récup entre répétitions.'
+    );
   } else if (sessionType === 'tempo') {
-    coaching.push('Bon travail au seuil: vise une allure stable sur les blocs tempo.');
+    coaching.push(
+      normalizedLocale === 'en'
+        ? 'Good threshold work: aim for stable pace on tempo blocks.'
+        : 'Bon travail au seuil: vise une allure stable sur les blocs tempo.'
+    );
   } else if (sessionType === 'hills') {
-    coaching.push('Séance spécifique D+: surveille la descente et la fatigue musculaire.');
+    coaching.push(
+      normalizedLocale === 'en'
+        ? 'Specific climbing session: watch downhill impact and muscular fatigue.'
+        : 'Séance spécifique D+: surveille la descente et la fatigue musculaire.'
+    );
   }
 
   const recentWindow = Array.isArray(recentActivities)
@@ -209,13 +242,14 @@ function buildSessionDetail(activity, { baseline, recentActivities = [] } = {}) 
       model: 'rundna-session-analyzer-v1',
       confidence,
       sessionType,
-      sessionLabel: sessionTypeLabelFr(sessionType),
-      summary: buildSessionSummaryFr({
+      sessionLabel: sessionTypeLabel(sessionType, normalizedLocale),
+      summary: buildSessionSummary({
         sessionType,
         splitInsights,
         analysis: enriched.analysis,
         durationMinutes: enriched.durationMinutes,
-        distanceKm: enriched.distanceKm
+        distanceKm: enriched.distanceKm,
+        locale: normalizedLocale
       }),
       reasons: insightReasons.slice(0, 4),
       coaching: coaching.slice(0, 3)
@@ -1419,51 +1453,68 @@ function buildSplitInsights(rawPayload) {
   };
 }
 
-function sessionTypeLabelFr(sessionType) {
+function sessionTypeLabel(sessionType, locale = 'fr') {
+  const normalizedLocale = normalizeLocale(locale);
   switch (sessionType) {
     case 'recovery':
-      return 'Récupération';
+      return normalizedLocale === 'en' ? 'Recovery' : 'Récupération';
     case 'easy':
-      return 'Endurance facile';
+      return normalizedLocale === 'en' ? 'Easy endurance' : 'Endurance facile';
     case 'steady':
-      return 'Endurance active';
+      return normalizedLocale === 'en' ? 'Steady endurance' : 'Endurance active';
     case 'tempo':
-      return 'Tempo / seuil';
+      return normalizedLocale === 'en' ? 'Tempo / threshold' : 'Tempo / seuil';
     case 'intervals_short':
-      return 'Fractionné court';
+      return normalizedLocale === 'en' ? 'Short intervals' : 'Fractionné court';
     case 'intervals_long':
-      return 'Fractionné long';
+      return normalizedLocale === 'en' ? 'Long intervals' : 'Fractionné long';
     case 'hills':
-      return 'Côtes / D+';
+      return normalizedLocale === 'en' ? 'Hills / elevation' : 'Côtes / D+';
     case 'long_run':
-      return 'Sortie longue';
+      return normalizedLocale === 'en' ? 'Long run' : 'Sortie longue';
     case 'long_trail':
-      return 'Sortie longue trail';
+      return normalizedLocale === 'en' ? 'Long trail run' : 'Sortie longue trail';
     default:
-      return 'Séance course';
+      return normalizedLocale === 'en' ? 'Run session' : 'Séance course';
   }
 }
 
-function buildSessionSummaryFr({
+function buildSessionSummary({
   sessionType,
   splitInsights,
   analysis,
   durationMinutes,
-  distanceKm
+  distanceKm,
+  locale = 'fr'
 }) {
+  const normalizedLocale = normalizeLocale(locale);
   if (sessionType === 'intervals_short' || sessionType === 'intervals_long') {
-    return `Séance ${sessionType === 'intervals_short' ? 'fractionné court' : 'fractionné long'} détectée: ${splitInsights.transitionCount} transitions, intensité ${analysis.intensityScore}/100.`;
+    return normalizedLocale === 'en'
+      ? `Detected ${sessionType === 'intervals_short' ? 'short' : 'long'} interval session: ${splitInsights.transitionCount} transitions, intensity ${analysis.intensityScore}/100.`
+      : `Séance ${sessionType === 'intervals_short' ? 'fractionné court' : 'fractionné long'} détectée: ${splitInsights.transitionCount} transitions, intensité ${analysis.intensityScore}/100.`;
   }
   if (sessionType === 'tempo') {
-    return `Séance tempo (${distanceKm.toFixed(1)} km / ${durationMinutes} min) avec contrainte cardiorespiratoire utile.`;
+    return normalizedLocale === 'en'
+      ? `Tempo session (${distanceKm.toFixed(1)} km / ${durationMinutes} min) with useful cardiorespiratory stimulus.`
+      : `Séance tempo (${distanceKm.toFixed(1)} km / ${durationMinutes} min) avec contrainte cardiorespiratoire utile.`;
   }
   if (sessionType === 'hills') {
-    return `Séance orientée dénivelé avec stress D+ ${analysis.elevationStress}/100.`;
+    return normalizedLocale === 'en'
+      ? `Climbing-focused session with elevation stress ${analysis.elevationStress}/100.`
+      : `Séance orientée dénivelé avec stress D+ ${analysis.elevationStress}/100.`;
   }
   if (sessionType === 'recovery') {
-    return 'Sortie de récupération confirmée: charge faible et coût récup limité.';
+    return normalizedLocale === 'en'
+      ? 'Confirmed recovery run: low load and limited recovery cost.'
+      : 'Sortie de récupération confirmée: charge faible et coût récup limité.';
   }
-  return `Séance ${sessionTypeLabelFr(sessionType).toLowerCase()} avec charge ${analysis.enduranceLoad}/100 et coût récup ${analysis.recoveryCost}/100.`;
+  return normalizedLocale === 'en'
+    ? `${sessionTypeLabel(sessionType, normalizedLocale)} session with load ${analysis.enduranceLoad}/100 and recovery cost ${analysis.recoveryCost}/100.`
+    : `Séance ${sessionTypeLabel(sessionType, normalizedLocale).toLowerCase()} avec charge ${analysis.enduranceLoad}/100 et coût récup ${analysis.recoveryCost}/100.`;
+}
+
+function normalizeLocale(locale) {
+  return String(locale ?? 'fr').toLowerCase().startsWith('en') ? 'en' : 'fr';
 }
 
 function extractSplitSamples(rawPayload) {

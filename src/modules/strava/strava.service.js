@@ -11,10 +11,11 @@ const {
 const SUPPORTED_STRAVA_SPORTS = ['Run', 'TrailRun'];
 
 class StravaService {
-  constructor({ repository, providerRepository, client, env, logger }) {
+  constructor({ repository, providerRepository, client, aiClient, env, logger }) {
     this.repository = repository;
     this.providerRepository = providerRepository;
     this.client = client;
+    this.aiClient = aiClient;
     this.env = env;
     this.logger = logger;
   }
@@ -260,7 +261,7 @@ class StravaService {
     };
   }
 
-  async getActivityDetail(userId, { activityId }) {
+  async getActivityDetail(userId, { activityId, locale }) {
     await this.#autoSyncOnRead(userId);
     if (!activityId || typeof activityId !== 'string') {
       const error = new Error('Activity id is required');
@@ -286,10 +287,24 @@ class StravaService {
     const baseline = buildUserBaseline(baselineRows);
     const recentRows = baselineRows.slice(0, 16);
 
-    return buildSessionDetail(activity, {
+    const normalizedLocale = this.#normalizeLocale(locale);
+    const baseDetail = buildSessionDetail(activity, {
       baseline,
-      recentActivities: recentRows
+      recentActivities: recentRows,
+      locale: normalizedLocale
     });
+    if (!this.aiClient || !this.aiClient.isEnabled()) {
+      return baseDetail;
+    }
+
+    try {
+      return await this.aiClient.enhanceSessionDetail(baseDetail, {
+        locale: normalizedLocale
+      });
+    } catch (error) {
+      this.logger.warn({ err: error }, 'Session AI enrichment failed; returning base detail');
+      return baseDetail;
+    }
   }
 
   async getDashboardWidgets(userId, { days = 70, widgetKeys = [] } = {}) {
@@ -565,6 +580,11 @@ class StravaService {
     } catch (_error) {
       return null;
     }
+  }
+
+  #normalizeLocale(value) {
+    const raw = String(value ?? '').trim().toLowerCase();
+    return raw.startsWith('en') ? 'en' : 'fr';
   }
 }
 

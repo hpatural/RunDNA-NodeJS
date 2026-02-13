@@ -98,7 +98,8 @@ async function stravaRoutes(fastify) {
     preHandler: [fastify.authenticate]
   }, async (request) => {
     const activityId = String(request.params?.activityId ?? '');
-    return stravaService.getActivityDetail(request.user.id, { activityId });
+    const locale = request.query?.lang ?? request.headers['accept-language'];
+    return stravaService.getActivityDetail(request.user.id, { activityId, locale });
   });
 
   fastify.get('/dashboard/widgets', {

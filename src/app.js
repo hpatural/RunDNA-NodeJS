@@ -13,6 +13,7 @@ const { ProviderService } = require('./modules/providers/provider.service');
 const { providerRoutes } = require('./modules/providers/provider.routes');
 const { PostgresStravaRepository } = require('./modules/strava/postgres_strava.repository');
 const { StravaApiClient } = require('./modules/strava/strava.client');
+const { StravaAiClient } = require('./modules/strava/strava.ai.client');
 const { StravaService } = require('./modules/strava/strava.service');
 const { StravaJobs } = require('./modules/strava/strava.jobs');
 const { stravaRoutes } = require('./modules/strava/strava.routes');
@@ -59,10 +60,12 @@ function buildApp() {
   const authService = new AuthService({ repository: authRepository, env, socialTokenVerifier });
   const providerService = new ProviderService({ repository: providerRepository });
   const stravaClient = new StravaApiClient({ env, logger: app.log });
+  const stravaAiClient = new StravaAiClient({ env, logger: app.log });
   const stravaService = new StravaService({
     repository: stravaRepository,
     providerRepository,
     client: stravaClient,
+    aiClient: stravaAiClient,
     env,
     logger: app.log
   });
