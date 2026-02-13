@@ -256,6 +256,18 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
     averagePace: averagePaceLabel
   };
 
+  const trainingDistribution = computeIntensityDistribution(last28, baseline);
+  const weeklyTarget = buildWeeklyTarget({
+    weekDistanceKm,
+    trendWeeks,
+    weeklyBaseline
+  });
+  const consistency = buildConsistencySnapshot({
+    currentWeek,
+    trendWeeks,
+    weeklyBaseline
+  });
+
   const insights = buildInsights({
     analysisInsights: analysis?.insights,
     weekDistanceKm,
@@ -286,8 +298,7 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
     speedIndex,
     climbEfficiencyIndex,
     consistencyIndex,
-    trailReadinessIndex
-    ,
+    trailReadinessIndex,
     loadRatio
   });
 
@@ -302,6 +313,9 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
       readinessAdvice
     },
     quickStats,
+    trainingDistribution,
+    weeklyTarget,
+    consistency,
     elevationFocus: {
       longRunDistanceKm,
       longRunElevation
@@ -335,6 +349,9 @@ function pickWidgets(allWidgets, requested) {
     'profile',
     'fatigue',
     'quickStats',
+    'trainingDistribution',
+    'weeklyTarget',
+    'consistency',
     'elevationFocus',
     'progressCurves',
     'insights',
@@ -601,6 +618,111 @@ function buildUserBaseline(activities) {
       longRunMedian: median(weeklyLongRun)
     }
   };
+}
+
+function computeIntensityDistribution(activities, baseline) {
+  const list = Array.isArray(activities) ? activities : [];
+  if (list.length === 0) {
+    return {
+      easyPct: 0,
+      moderatePct: 0,
+      hardPct: 0,
+      sampleCount: 0
+    };
+  }
+
+  let easy = 0;
+  let moderate = 0;
+  let hard = 0;
+
+  for (const item of list) {
+    const score = buildActivityAnalysis(item, { baseline }).intensityScore;
+    if (score < 45) {
+      easy += 1;
+    } else if (score < 70) {
+      moderate += 1;
+    } else {
+      hard += 1;
+    }
+  }
+
+  const total = list.length;
+  return {
+    easyPct: Math.round((easy / total) * 100),
+    moderatePct: Math.round((moderate / total) * 100),
+    hardPct: Math.round((hard / total) * 100),
+    sampleCount: total
+  };
+}
+
+function buildWeeklyTarget({ weekDistanceKm, trendWeeks, weeklyBaseline }) {
+  const baselineTarget = Number(weeklyBaseline?.distanceMedian ?? 0);
+  const trailingWeeks = Array.isArray(trendWeeks) ? trendWeeks.slice(-4, -1) : [];
+  const trailingAvg = trailingWeeks.length > 0
+    ? sum(trailingWeeks, (item) => Number(item.distanceKm ?? 0)) / trailingWeeks.length
+    : 0;
+
+  const targetDistanceKm = round1(Math.max(12, baselineTarget, trailingAvg));
+  const remainingDistanceKm = round1(Math.max(targetDistanceKm - weekDistanceKm, 0));
+  const progressPct = targetDistanceKm > 0
+    ? Math.min(100, Math.round((weekDistanceKm / targetDistanceKm) * 100))
+    : 0;
+
+  const weekRatio = weekElapsedRatio();
+  const projectedDistanceKm = weekRatio > 0
+    ? round1(weekDistanceKm / weekRatio)
+    : weekDistanceKm;
+  const onTrack = projectedDistanceKm >= targetDistanceKm * 0.95;
+
+  return {
+    targetDistanceKm,
+    currentDistanceKm: round1(weekDistanceKm),
+    remainingDistanceKm,
+    progressPct,
+    projectedDistanceKm,
+    onTrack
+  };
+}
+
+function buildConsistencySnapshot({ currentWeek, trendWeeks, weeklyBaseline }) {
+  const activeDaysThisWeek = countActiveDays(currentWeek);
+  const baselineActiveDays = Math.max(1, Math.round(median(weeklyBaseline?.activeDays ?? [])));
+  const streakWeeks3PlusRuns = countTrailingWeeks(
+    trendWeeks,
+    (week) => Number(week.distanceKm ?? 0) > 0 && Number(week.activeDays ?? 0) >= 3
+  );
+
+  return {
+    activeDaysThisWeek,
+    baselineActiveDays,
+    streakWeeks3PlusRuns
+  };
+}
+
+function countTrailingWeeks(weeks, predicate) {
+  if (!Array.isArray(weeks) || weeks.length === 0) {
+    return 0;
+  }
+  let count = 0;
+  for (let i = weeks.length - 1; i >= 0; i -= 1) {
+    if (!predicate(weeks[i])) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function weekElapsedRatio() {
+  const now = new Date();
+  const day = now.getDay() === 0 ? 7 : now.getDay();
+  const secondsToday =
+    (now.getHours() * 3600) +
+    (now.getMinutes() * 60) +
+    now.getSeconds();
+  const elapsed = ((day - 1) * 24 * 3600) + secondsToday;
+  const weekTotal = 7 * 24 * 3600;
+  return Math.max(0.05, Math.min(1, elapsed / weekTotal));
 }
 
 function normalizeTrend(values) {
