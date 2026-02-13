@@ -25,7 +25,7 @@ async function stravaRoutes(fastify) {
       const redirect = new URL(result.relayUri);
       redirect.searchParams.set('provider', 'strava');
       redirect.searchParams.set('connected', 'true');
-      return reply.redirect(302, redirect.toString());
+      return reply.redirect(redirect.toString(), 302);
     }
     return {
       connected: true,
