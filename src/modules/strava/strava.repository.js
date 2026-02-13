@@ -4,6 +4,7 @@ class StravaRepository {
     this.userIdByAthleteId = new Map();
     this.activitiesByUserId = new Map();
     this.webhookEvents = [];
+    this.notificationsByUserId = new Map();
   }
 
   async upsertConnection(connection) {
@@ -135,6 +136,54 @@ class StravaRepository {
       receivedAt: new Date().toISOString(),
       event
     });
+  }
+
+  async createNotification({
+    userId,
+    type,
+    title,
+    message,
+    externalRef = null,
+    payload = {}
+  }) {
+    const items = this.notificationsByUserId.get(userId) ?? [];
+    if (
+      externalRef &&
+      items.some(
+        (item) =>
+          item.type === type &&
+          item.externalRef === externalRef
+      )
+    ) {
+      return;
+    }
+    items.push({
+      type,
+      title,
+      message,
+      externalRef,
+      payload,
+      createdAt: new Date().toISOString(),
+      readAt: null
+    });
+    this.notificationsByUserId.set(userId, items);
+  }
+
+  async getUnreadNotificationSummary(userId) {
+    const items = this.notificationsByUserId.get(userId) ?? [];
+    return {
+      unreadCount: items.filter((item) => !item.readAt).length
+    };
+  }
+
+  async markNotificationsRead(userId) {
+    const items = this.notificationsByUserId.get(userId) ?? [];
+    const now = new Date().toISOString();
+    for (const item of items) {
+      if (!item.readAt) {
+        item.readAt = now;
+      }
+    }
   }
 
   #sanitizeConnection(connection) {

@@ -26,6 +26,8 @@
 - `GET /v1/analysis/strava?days=30` (Bearer token required)
 - `GET /v1/activities/enriched?limit=40&before=<iso>` (Bearer token required)
 - `GET /v1/dashboard/widgets?days=70&widgets=profile,fatigue,...` (Bearer token required)
+- `GET /v1/notifications/unread-summary` (Bearer token required)
+- `POST /v1/notifications/read` (Bearer token required)
 - `GET /v1/providers/strava/webhook` (Strava challenge endpoint)
 - `POST /v1/providers/strava/webhook` (Strava events endpoint)
 
@@ -54,7 +56,8 @@ Optional Strava tuning:
 - `STRAVA_TOKEN_REFRESH_INTERVAL_MINUTES` (default: `10`)
 - `STRAVA_SYNC_INTERVAL_MINUTES` (default: `30`)
 - `STRAVA_SYNC_MAX_PAGES` (default: `10`)
-- `STRAVA_AUTO_SYNC_ON_READ` (default: `true`)
+- `STRAVA_ENABLE_SCHEDULED_SYNC` (default: `false`)
+- `STRAVA_AUTO_SYNC_ON_READ` (default: `false`)
 - `STRAVA_AUTO_SYNC_READ_STALE_MINUTES` (default: `15`)
 
 ## Strava flow
@@ -73,6 +76,7 @@ Or
    - Analyse brute Strava (optionnel): `GET /v1/analysis/strava?days=30`
 
 Note: seules les activites Strava de type `Run` et `TrailRun` sont ingerees et exposees.
+La premiere synchro charge 30 jours d'historique, puis les sync suivantes sont incrementales.
 
 ## Analysis output
 `GET /v1/analysis/strava` returns:

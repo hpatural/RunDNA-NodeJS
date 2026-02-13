@@ -55,6 +55,18 @@ async function stravaRoutes(fastify) {
     return stravaService.getConnectionStatus(request.user.id);
   });
 
+  fastify.get('/notifications/unread-summary', {
+    preHandler: [fastify.authenticate]
+  }, async (request) => {
+    return stravaService.getUnreadNotificationSummary(request.user.id);
+  });
+
+  fastify.post('/notifications/read', {
+    preHandler: [fastify.authenticate]
+  }, async (request) => {
+    return stravaService.markNotificationsRead(request.user.id);
+  });
+
   fastify.post('/providers/strava/sync', {
     preHandler: [fastify.authenticate]
   }, async (request) => {

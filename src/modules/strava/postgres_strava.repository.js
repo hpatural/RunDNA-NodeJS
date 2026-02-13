@@ -303,6 +303,69 @@ class PostgresStravaRepository {
     );
   }
 
+  async createNotification({
+    userId,
+    type,
+    title,
+    message,
+    externalRef = null,
+    payload = {}
+  }) {
+    try {
+      await this.pool.query(
+        `
+          INSERT INTO user_notifications (
+            user_id, type, title, message, external_ref, payload, created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
+        `,
+        [
+          userId,
+          type,
+          title,
+          message,
+          externalRef,
+          JSON.stringify(payload)
+        ]
+      );
+    } catch (error) {
+      if (
+        error?.code === '23505' &&
+        String(error?.constraint || '').includes('idx_user_notifications_user_type_external_ref')
+      ) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async getUnreadNotificationSummary(userId) {
+    const result = await this.pool.query(
+      `
+        SELECT COUNT(*)::int AS unread_count
+        FROM user_notifications
+        WHERE user_id = $1
+          AND read_at IS NULL
+      `,
+      [userId]
+    );
+    return {
+      unreadCount: result.rows[0]?.unread_count ?? 0
+    };
+  }
+
+  async markNotificationsRead(userId) {
+    await this.pool.query(
+      `
+        UPDATE user_notifications
+        SET read_at = NOW()
+        WHERE user_id = $1
+          AND read_at IS NULL
+      `,
+      [userId]
+    );
+  }
+
   #mapConnection(row) {
     return {
       userId: row.user_id,

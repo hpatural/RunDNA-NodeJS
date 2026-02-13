@@ -114,6 +114,31 @@ async function ensureAuthSchema(pool) {
       received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_notifications (
+      id BIGSERIAL PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      external_ref TEXT,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      read_at TIMESTAMPTZ
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_user_notifications_user_read
+    ON user_notifications (user_id, read_at, created_at DESC);
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_user_notifications_user_type_external_ref
+    ON user_notifications (user_id, type, external_ref)
+    WHERE external_ref IS NOT NULL;
+  `);
 }
 
 module.exports = { createPostgresPool, resetDatabase, ensureAuthSchema };

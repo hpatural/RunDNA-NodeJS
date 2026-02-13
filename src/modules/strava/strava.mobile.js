@@ -52,16 +52,16 @@ function toEnrichedActivity(activity) {
 
 function buildDashboardData({ userEmail, activities, analysis }) {
   const recentActivities = activities.slice(0, 24);
-  const last7 = filterByDays(activities, 7);
+  const currentWeek = filterCurrentWeekFromMonday(activities);
   const last28 = filterByDays(activities, 28);
   const previous28 = filterByDaysBetween(activities, 56, 28);
   const displayName = deriveDisplayName(userEmail);
 
-  const weekDistanceKm = round1(sum(last7, (item) => Number(item.distanceM ?? 0)) / 1000);
-  const weekRuns = last7.length;
-  const weekElevationGain = Math.round(sum(last7, (item) => Number(item.totalElevationGainM ?? 0)));
-  const weekMovingHours = round2(sum(last7, (item) => Number(item.movingTimeSec ?? 0)) / 3600);
-  const averagePaceMinKm7d = averagePaceMinKm(last7);
+  const weekDistanceKm = round1(sum(currentWeek, (item) => Number(item.distanceM ?? 0)) / 1000);
+  const weekRuns = currentWeek.length;
+  const weekElevationGain = Math.round(sum(currentWeek, (item) => Number(item.totalElevationGainM ?? 0)));
+  const weekMovingHours = round2(sum(currentWeek, (item) => Number(item.movingTimeSec ?? 0)) / 3600);
+  const averagePaceMinKm7d = averagePaceMinKm(currentWeek);
   const averagePaceLabel = formatPace(averagePaceMinKm7d);
 
   const longRun = recentActivities.reduce((acc, item) => {
@@ -239,6 +239,16 @@ function computePaceMinPerKm(activity) {
 function filterByDays(activities, days) {
   const threshold = Date.now() - days * 24 * 60 * 60 * 1000;
   return activities.filter((item) => new Date(item.startDate).getTime() >= threshold);
+}
+
+function filterCurrentWeekFromMonday(activities) {
+  const now = new Date();
+  const currentDay = now.getDay() === 0 ? 7 : now.getDay();
+  const monday = new Date(now);
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(now.getDate() - (currentDay - 1));
+  const mondayTs = monday.getTime();
+  return activities.filter((item) => new Date(item.startDate).getTime() >= mondayTs);
 }
 
 function filterByDaysBetween(activities, daysFrom, daysTo) {

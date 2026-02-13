@@ -21,13 +21,17 @@ class StravaJobs {
       this.logger.info({ result }, 'Strava token refresh cycle complete');
     }, refreshIntervalMs);
 
-    this.syncTimer = setInterval(async () => {
-      const result = await this.stravaService.syncStaleUsers();
-      this.logger.info({ result }, 'Strava background sync cycle complete');
-    }, syncIntervalMs);
+    if (this.env.stravaEnableScheduledSync) {
+      this.syncTimer = setInterval(async () => {
+        const result = await this.stravaService.syncStaleUsers();
+        this.logger.info({ result }, 'Strava background sync cycle complete');
+      }, syncIntervalMs);
+    }
 
     this.refreshTimer.unref();
-    this.syncTimer.unref();
+    if (this.syncTimer) {
+      this.syncTimer.unref();
+    }
   }
 
   stop() {

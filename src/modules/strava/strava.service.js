@@ -146,8 +146,8 @@ class StravaService {
       sportTypes: SUPPORTED_STRAVA_SPORTS
     });
     const after = latestActivityDate
-      ? Math.floor(new Date(latestActivityDate).getTime() / 1000) - 2 * 24 * 60 * 60
-      : undefined;
+      ? Math.floor(new Date(latestActivityDate).getTime() / 1000) + 1
+      : Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
 
     let page = 1;
     const collected = [];
@@ -272,6 +272,20 @@ class StravaService {
       return { accepted: true, action: 'unknown_athlete' };
     }
 
+    if (event.aspect_type === 'create' && event.object_id) {
+      await this.repository.createNotification({
+        userId: connection.userId,
+        type: 'strava.new_activity',
+        title: 'Nouvelle activite Strava',
+        message: 'Une nouvelle seance a ete detectee sur Strava.',
+        externalRef: String(event.object_id),
+        payload: {
+          objectId: String(event.object_id),
+          ownerId: String(event.owner_id)
+        }
+      });
+    }
+
     try {
       await this.syncUserActivities(connection.userId, { force: false });
     } catch (error) {
@@ -328,6 +342,15 @@ class StravaService {
     }
 
     return { checked: users.length, synced };
+  }
+
+  async getUnreadNotificationSummary(userId) {
+    return this.repository.getUnreadNotificationSummary(userId);
+  }
+
+  async markNotificationsRead(userId) {
+    await this.repository.markNotificationsRead(userId);
+    return { success: true };
   }
 
   async #ensureFreshAccessToken(connection, force) {
