@@ -1,0 +1,142 @@
+class StravaRepository {
+  constructor() {
+    this.connectionsByUserId = new Map();
+    this.userIdByAthleteId = new Map();
+    this.activitiesByUserId = new Map();
+    this.webhookEvents = [];
+  }
+
+  async upsertConnection(connection) {
+    const nowIso = new Date().toISOString();
+    const existing = this.connectionsByUserId.get(connection.userId);
+    const normalized = {
+      userId: connection.userId,
+      athleteId: connection.athleteId,
+      scope: connection.scope ?? null,
+      accessToken: connection.accessToken,
+      refreshToken: connection.refreshToken,
+      tokenExpiresAt: connection.tokenExpiresAt,
+      connectedAt: existing?.connectedAt ?? nowIso,
+      updatedAt: nowIso,
+      lastSyncedAt: existing?.lastSyncedAt ?? null
+    };
+
+    this.connectionsByUserId.set(connection.userId, normalized);
+    if (connection.athleteId) {
+      this.userIdByAthleteId.set(String(connection.athleteId), connection.userId);
+    }
+    return this.#sanitizeConnection(normalized);
+  }
+
+  async getConnectionByUserId(userId) {
+    const connection = this.connectionsByUserId.get(userId);
+    return connection ? this.#sanitizeConnection(connection) : null;
+  }
+
+  async getConnectionByAthleteId(athleteId) {
+    const userId = this.userIdByAthleteId.get(String(athleteId));
+    if (!userId) {
+      return null;
+    }
+    const connection = this.connectionsByUserId.get(userId);
+    return connection ? this.#sanitizeConnection(connection) : null;
+  }
+
+  async listConnectionsExpiringBefore(isoDate, limit = 100) {
+    const threshold = new Date(isoDate).getTime();
+    const rows = [];
+    for (const connection of this.connectionsByUserId.values()) {
+      if (new Date(connection.tokenExpiresAt).getTime() <= threshold) {
+        rows.push(this.#sanitizeConnection(connection));
+      }
+    }
+    return rows.slice(0, limit);
+  }
+
+  async listUsersForSync({ staleBefore, limit = 100 }) {
+    const threshold = new Date(staleBefore).getTime();
+    const rows = [];
+    for (const connection of this.connectionsByUserId.values()) {
+      if (!connection.lastSyncedAt || new Date(connection.lastSyncedAt).getTime() <= threshold) {
+        rows.push(this.#sanitizeConnection(connection));
+      }
+    }
+    return rows.slice(0, limit);
+  }
+
+  async touchLastSyncedAt(userId, isoDate) {
+    const current = this.connectionsByUserId.get(userId);
+    if (!current) {
+      return;
+    }
+    current.lastSyncedAt = isoDate;
+    current.updatedAt = new Date().toISOString();
+  }
+
+  async upsertActivities(userId, activities) {
+    const existing = this.activitiesByUserId.get(userId) ?? [];
+    const byId = new Map(existing.map((item) => [item.activityId, item]));
+
+    for (const activity of activities) {
+      byId.set(activity.activityId, activity);
+    }
+
+    const merged = Array.from(byId.values());
+    this.activitiesByUserId.set(userId, merged);
+    return merged.length;
+  }
+
+  async getActivities(userId, { startDate, endDate, limit = 1000 } = {}) {
+    const all = this.activitiesByUserId.get(userId) ?? [];
+    const filtered = all.filter((item) => {
+      const timestamp = new Date(item.startDate).getTime();
+      if (startDate && timestamp < new Date(startDate).getTime()) {
+        return false;
+      }
+      if (endDate && timestamp > new Date(endDate).getTime()) {
+        return false;
+      }
+      return true;
+    });
+
+    filtered.sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+    return filtered.slice(0, limit);
+  }
+
+  async getLatestActivityDate(userId) {
+    const all = this.activitiesByUserId.get(userId) ?? [];
+    if (all.length === 0) {
+      return null;
+    }
+    const latest = all.reduce((acc, item) => {
+      if (!acc) {
+        return item;
+      }
+      return new Date(item.startDate).getTime() > new Date(acc.startDate).getTime() ? item : acc;
+    }, null);
+    return latest?.startDate ?? null;
+  }
+
+  async recordWebhookEvent(event) {
+    this.webhookEvents.push({
+      receivedAt: new Date().toISOString(),
+      event
+    });
+  }
+
+  #sanitizeConnection(connection) {
+    return {
+      userId: connection.userId,
+      athleteId: connection.athleteId,
+      scope: connection.scope,
+      accessToken: connection.accessToken,
+      refreshToken: connection.refreshToken,
+      tokenExpiresAt: connection.tokenExpiresAt,
+      connectedAt: connection.connectedAt,
+      updatedAt: connection.updatedAt,
+      lastSyncedAt: connection.lastSyncedAt
+    };
+  }
+}
+
+module.exports = { StravaRepository };
