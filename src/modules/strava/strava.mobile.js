@@ -213,15 +213,16 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
   const chronicLoad =
     (chronicDistanceKm / 4) + (sum(last28, (item) => Number(item.totalElevationGainM ?? 0)) / 480);
   const loadRatio = chronicLoad > 0 ? acuteLoad / chronicLoad : 0;
-
-  const fallbackFatigue = clampScore((acuteLoad * 2.2) + (Math.max(loadRatio - 1, 0) * 48));
-  const fatigueScore = clampScore(
-    Number(analysis?.load?.fatigueScore ?? fallbackFatigue)
-  );
+  const trainingDistribution = computeIntensityDistribution(last28, baseline);
+  const fatigueModel = computeFatigueModel({
+    loadRatio,
+    monotony7d: Number(analysis?.load?.monotony7d ?? 0),
+    hardPct: trainingDistribution.hardPct,
+    recentRuns: weekRuns
+  });
+  const fatigueScore = fatigueModel.fatigueScore;
   const fatigueZone = resolveFatigueZoneFr(fatigueScore);
-  const recoveryIndex = clampScore(
-    Number(analysis?.load?.readinessScore ?? (100 - fatigueScore))
-  );
+  const recoveryIndex = fatigueModel.readinessScore;
 
   const trailReadinessIndex = weightedScore([
     { score: enduranceIndex, weight: 0.4 },
@@ -256,7 +257,6 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
     averagePace: averagePaceLabel
   };
 
-  const trainingDistribution = computeIntensityDistribution(last28, baseline);
   const trainingLoadBalance = buildTrainingLoadBalance({
     acuteLoad,
     chronicLoad,
@@ -295,7 +295,7 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
     elevationDeltaPct: weeklyComparisons.elevationDeltaPct
   });
 
-  const readinessAdvice = resolveReadinessAdvice(fatigueZone, recoveryIndex);
+  const readinessAdvice = fatigueModel.advice;
   const focus = resolveFocus({
     fatigueScore,
     fatigueZone,
@@ -427,10 +427,10 @@ function deriveDisplayName(email) {
 }
 
 function resolveFatigueZoneFr(fatigueScore) {
-  if (fatigueScore <= 45) {
+  if (fatigueScore <= 42) {
     return 'Vert';
   }
-  if (fatigueScore <= 70) {
+  if (fatigueScore <= 68) {
     return 'Orange';
   }
   return 'Rouge';
@@ -667,20 +667,20 @@ function buildTrainingLoadBalance({ acuteLoad, chronicLoad, analysis }) {
   const chronic = Number(analysis?.load?.chronicLoad28d ?? chronicLoad ?? 0);
   const ratio = chronic > 0 ? acute / chronic : 0;
 
-  let zone = 'Insuffisante';
-  let advice = 'Charge faible: ajoute progressivement du volume facile.';
+  let zone = 'Legere';
+  let advice = 'Charge legere: tu peux augmenter doucement le volume.';
   let riskScore = 20;
 
   if (ratio >= 0.8 && ratio <= 1.3) {
-    zone = 'Optimale';
+    zone = 'Equilibree';
     advice = 'Charge bien calibree: tu peux maintenir ce rythme.';
     riskScore = 35;
   } else if (ratio > 1.3 && ratio <= 1.5) {
-    zone = 'Elevee';
+    zone = 'Haute';
     advice = 'Charge en hausse: garde une seule seance intense et optimise la recup.';
     riskScore = 62;
   } else if (ratio > 1.5) {
-    zone = 'Risque';
+    zone = 'Trop haute';
     advice = 'Risque de surcharge: baisse volume/intensite 48-72h.';
     riskScore = 82;
   }
@@ -693,6 +693,64 @@ function buildTrainingLoadBalance({ acuteLoad, chronicLoad, analysis }) {
     riskScore,
     advice
   };
+}
+
+function computeFatigueModel({ loadRatio, monotony7d, hardPct, recentRuns }) {
+  const ratioScore = scoreFromLoadRatio(loadRatio);
+  const monotonyScore = clampScore(linearScore(monotony7d, 0.8, 2.5, 25, 88));
+  const hardScore = clampScore(linearScore(hardPct, 8, 35, 20, 86));
+
+  let fatigueScore = weightedScore([
+    { score: ratioScore, weight: 0.55 },
+    { score: monotonyScore, weight: 0.25 },
+    { score: hardScore, weight: 0.2 }
+  ]);
+
+  if (recentRuns <= 0) {
+    fatigueScore = 18;
+  } else if (recentRuns === 1) {
+    fatigueScore = Math.min(fatigueScore, 36);
+  }
+
+  const fatigueZone = resolveFatigueZoneFr(fatigueScore);
+  const readinessScore = clampScore(100 - fatigueScore);
+  const advice = resolveReadinessAdvice(fatigueZone, readinessScore);
+
+  return {
+    fatigueScore,
+    readinessScore,
+    advice
+  };
+}
+
+function scoreFromLoadRatio(loadRatio) {
+  if (!Number.isFinite(loadRatio) || loadRatio <= 0) {
+    return 20;
+  }
+  if (loadRatio <= 0.75) {
+    return 30;
+  }
+  if (loadRatio <= 1.05) {
+    return clampScore(linearScore(loadRatio, 0.75, 1.05, 38, 55));
+  }
+  if (loadRatio <= 1.3) {
+    return clampScore(linearScore(loadRatio, 1.05, 1.3, 55, 70));
+  }
+  if (loadRatio <= 1.55) {
+    return clampScore(linearScore(loadRatio, 1.3, 1.55, 70, 88));
+  }
+  return 95;
+}
+
+function linearScore(value, domainMin, domainMax, rangeMin, rangeMax) {
+  if (!Number.isFinite(value)) {
+    return rangeMin;
+  }
+  if (domainMax <= domainMin) {
+    return rangeMin;
+  }
+  const t = Math.max(0, Math.min(1, (value - domainMin) / (domainMax - domainMin)));
+  return rangeMin + ((rangeMax - rangeMin) * t);
 }
 
 function buildWeeklyTarget({ weekDistanceKm, trendWeeks, weeklyBaseline }) {
