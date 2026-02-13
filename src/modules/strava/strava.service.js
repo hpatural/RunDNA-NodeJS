@@ -456,8 +456,28 @@ class StravaService {
       manual: Boolean(activity.manual),
       kudosCount: Number(activity.kudos_count ?? 0),
       achievementCount: Number(activity.achievement_count ?? 0),
+      relativeEffortScore: this.#extractRelativeEffortScore(activity),
       rawPayload: activity
     };
+  }
+
+  #extractRelativeEffortScore(activity) {
+    const direct = Number(activity?.relative_effort ?? activity?.suffer_score ?? 0);
+    if (Number.isFinite(direct) && direct > 0) {
+      return direct;
+    }
+    const payload = activity ?? {};
+    const nested = Number(
+      payload?.stats?.relative_effort ??
+      payload?.stats?.suffer_score ??
+      payload?.detailed?.relative_effort ??
+      payload?.detailed?.suffer_score ??
+      0
+    );
+    if (Number.isFinite(nested) && nested > 0) {
+      return nested;
+    }
+    return null;
   }
 
   #isSupportedSport(activity) {

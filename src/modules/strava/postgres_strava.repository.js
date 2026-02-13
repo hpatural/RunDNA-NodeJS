@@ -143,6 +143,7 @@ class PostgresStravaRepository {
               max_speed_mps,
               average_heartrate,
               max_heartrate,
+              relative_effort_score,
               trainer,
               commute,
               manual,
@@ -153,7 +154,7 @@ class PostgresStravaRepository {
             )
             VALUES (
               $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-              $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW()
+              $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW()
             )
             ON CONFLICT (activity_id)
             DO UPDATE SET
@@ -171,6 +172,7 @@ class PostgresStravaRepository {
               max_speed_mps = EXCLUDED.max_speed_mps,
               average_heartrate = EXCLUDED.average_heartrate,
               max_heartrate = EXCLUDED.max_heartrate,
+              relative_effort_score = EXCLUDED.relative_effort_score,
               trainer = EXCLUDED.trainer,
               commute = EXCLUDED.commute,
               manual = EXCLUDED.manual,
@@ -195,6 +197,7 @@ class PostgresStravaRepository {
             activity.maxSpeedMps,
             activity.averageHeartRate,
             activity.maxHeartRate,
+            activity.relativeEffortScore,
             activity.trainer,
             activity.commute,
             activity.manual,
@@ -242,7 +245,7 @@ class PostgresStravaRepository {
       `
         SELECT activity_id, name, sport_type, type, start_date, timezone,
                moving_time_sec, elapsed_time_sec, distance_m, total_elevation_gain_m,
-               average_speed_mps, max_speed_mps, average_heartrate, max_heartrate,
+               average_speed_mps, max_speed_mps, average_heartrate, max_heartrate, relative_effort_score,
                trainer, commute, manual, kudos_count, achievement_count
         FROM strava_activities
         WHERE ${conditions.join(' AND ')}
@@ -396,6 +399,7 @@ class PostgresStravaRepository {
       maxSpeedMps: row.max_speed_mps ? Number(row.max_speed_mps) : 0,
       averageHeartRate: row.average_heartrate ? Number(row.average_heartrate) : null,
       maxHeartRate: row.max_heartrate ? Number(row.max_heartrate) : null,
+      relativeEffortScore: row.relative_effort_score ? Number(row.relative_effort_score) : null,
       trainer: Boolean(row.trainer),
       commute: Boolean(row.commute),
       manual: Boolean(row.manual),

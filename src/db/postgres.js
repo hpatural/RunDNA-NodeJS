@@ -92,9 +92,15 @@ async function ensureAuthSchema(pool) {
       manual BOOLEAN NOT NULL DEFAULT FALSE,
       kudos_count INTEGER NOT NULL DEFAULT 0,
       achievement_count INTEGER NOT NULL DEFAULT 0,
+      relative_effort_score DOUBLE PRECISION,
       raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
       synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+  `);
+
+  await pool.query(`
+    ALTER TABLE strava_activities
+    ADD COLUMN IF NOT EXISTS relative_effort_score DOUBLE PRECISION;
   `);
 
   await pool.query(`

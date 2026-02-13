@@ -89,7 +89,11 @@ function buildTotals(activities) {
       heartRateSamples += 1;
     }
 
-    trainingLoad += estimateTrainingLoad({ movingTimeSec: movingTime, averageHeartRate });
+    trainingLoad += estimateTrainingLoad({
+      movingTimeSec: movingTime,
+      averageHeartRate,
+      relativeEffortScore: Number(item.relativeEffortScore ?? 0)
+    });
   }
 
   return {
@@ -103,19 +107,23 @@ function buildTotals(activities) {
   };
 }
 
-function estimateTrainingLoad({ movingTimeSec, averageHeartRate }) {
+function estimateTrainingLoad({ movingTimeSec, averageHeartRate, relativeEffortScore = 0 }) {
   const durationMinutes = movingTimeSec / 60;
   if (durationMinutes <= 0) {
     return 0;
   }
 
+  const relativeEffortBonus = Number.isFinite(relativeEffortScore) && relativeEffortScore > 0
+    ? relativeEffortScore * 0.8
+    : 0;
+
   if (!averageHeartRate || averageHeartRate <= 0) {
-    return durationMinutes * 1.8;
+    return (durationMinutes * 1.8) + relativeEffortBonus;
   }
 
   const hrRatio = Math.min(1.05, averageHeartRate / DEFAULT_MAX_HEART_RATE);
   const intensityFactor = 1 + hrRatio * 2.2;
-  return durationMinutes * intensityFactor;
+  return (durationMinutes * intensityFactor) + relativeEffortBonus;
 }
 
 function computeMonotony(activities) {
@@ -130,7 +138,8 @@ function computeMonotony(activities) {
       dateKey,
       current + estimateTrainingLoad({
         movingTimeSec: Number(activity.movingTimeSec ?? 0),
-        averageHeartRate: Number(activity.averageHeartRate ?? 0)
+        averageHeartRate: Number(activity.averageHeartRate ?? 0),
+        relativeEffortScore: Number(activity.relativeEffortScore ?? 0)
       })
     );
   }

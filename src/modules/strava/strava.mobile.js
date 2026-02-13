@@ -7,16 +7,24 @@ function buildActivityAnalysis(activity, { baseline } = {}) {
 
   const intensity = weightedScore([
     {
-      score: percentileScore(baseline.series.speedMps, metrics.speedMps, { higherIsBetter: true }),
-      weight: 0.45
-    },
-    {
-      score: percentileScore(baseline.series.heartRate, metrics.averageHeartRate, { higherIsBetter: true }),
+      score: percentileScore(
+        baseline.series.relativeEffort,
+        metrics.relativeEffortScore,
+        { higherIsBetter: true }
+      ),
       weight: 0.35
     },
     {
-      score: percentileScore(baseline.series.elevationPerKm, metrics.elevationPerKm, { higherIsBetter: true }),
+      score: percentileScore(baseline.series.speedMps, metrics.speedMps, { higherIsBetter: true }),
+      weight: 0.3
+    },
+    {
+      score: percentileScore(baseline.series.heartRate, metrics.averageHeartRate, { higherIsBetter: true }),
       weight: 0.2
+    },
+    {
+      score: percentileScore(baseline.series.elevationPerKm, metrics.elevationPerKm, { higherIsBetter: true }),
+      weight: 0.15
     }
   ]);
 
@@ -573,6 +581,7 @@ function buildUserBaseline(activities) {
     series: {
       speedMps: metrics.map((item) => item.speedMps),
       heartRate: metrics.map((item) => item.averageHeartRate).filter((value) => value > 0),
+      relativeEffort: metrics.map((item) => item.relativeEffortScore).filter((value) => value > 0),
       elevationPerKm: metrics.map((item) => item.elevationPerKm),
       trainingLoad: metrics.map((item) => item.trainingLoad),
       distanceKm: metrics.map((item) => item.distanceKm),
@@ -792,10 +801,12 @@ function computeActivityMetrics(activity) {
   const paceMinPerKm = computePaceMinPerKm(activity);
   const speedMps = movingTimeSec > 0 ? Number(activity.distanceM ?? 0) / movingTimeSec : 0;
   const averageHeartRate = Number(activity.averageHeartRate ?? 0);
+  const relativeEffortScore = Number(activity.relativeEffortScore ?? 0);
   const elevationGain = Number(activity.totalElevationGainM ?? 0);
   const elevationPerKmValue = elevationPerKm(activity);
   const hrRatio = averageHeartRate > 0 ? Math.min(1.08, averageHeartRate / 190) : 0.65;
-  const trainingLoad = (durationMinutes * (1 + hrRatio * 1.9)) + (elevationGain / 85);
+  const relativeEffortLoad = relativeEffortScore > 0 ? (relativeEffortScore * 0.8) : 0;
+  const trainingLoad = (durationMinutes * (1 + hrRatio * 1.9)) + (elevationGain / 85) + relativeEffortLoad;
 
   return {
     distanceKm,
@@ -803,6 +814,7 @@ function computeActivityMetrics(activity) {
     paceMinPerKm,
     speedMps,
     averageHeartRate,
+    relativeEffortScore: relativeEffortScore > 0 ? relativeEffortScore : 0,
     elevationGain,
     elevationPerKm: elevationPerKmValue,
     trainingLoad
