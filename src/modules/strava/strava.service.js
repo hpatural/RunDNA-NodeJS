@@ -3,7 +3,8 @@ const { analyzeStravaActivities } = require('./strava.analysis');
 const {
   toEnrichedActivity,
   buildDashboardData,
-  pickWidgets
+  pickWidgets,
+  buildUserBaseline
 } = require('./strava.mobile');
 
 const SUPPORTED_STRAVA_SPORTS = ['Run', 'TrailRun'];
@@ -214,9 +215,19 @@ class StravaService {
       sportTypes: SUPPORTED_STRAVA_SPORTS
     });
 
+    const baselineStartDate = new Date(
+      Date.now() - 120 * 24 * 60 * 60 * 1000
+    ).toISOString();
+    const baselineRows = await this.repository.getActivities(userId, {
+      startDate: baselineStartDate,
+      limit: 3000,
+      sportTypes: SUPPORTED_STRAVA_SPORTS
+    });
+    const baseline = buildUserBaseline(baselineRows);
+
     const pageItems = rows.slice(0, normalizedLimit);
     return {
-      activities: pageItems.map((activity) => toEnrichedActivity(activity)),
+      activities: pageItems.map((activity) => toEnrichedActivity(activity, { baseline })),
       nextBefore: rows.length > normalizedLimit
         ? pageItems[pageItems.length - 1]?.startDate ?? null
         : null
@@ -226,18 +237,27 @@ class StravaService {
   async getDashboardWidgets(userId, { days = 70, widgetKeys = [] } = {}) {
     await this.#autoSyncOnRead(userId);
     const normalizedDays = Math.max(14, Math.min(180, Number(days) || 70));
-    const startDate = new Date(Date.now() - normalizedDays * 24 * 60 * 60 * 1000).toISOString();
-    const activities = await this.repository.getActivities(userId, {
-      startDate,
-      limit: 2400,
+    const baselineDays = Math.max(normalizedDays, 120);
+    const baselineStartDate = new Date(
+      Date.now() - baselineDays * 24 * 60 * 60 * 1000
+    ).toISOString();
+    const baselineActivities = await this.repository.getActivities(userId, {
+      startDate: baselineStartDate,
+      limit: 3000,
       sportTypes: SUPPORTED_STRAVA_SPORTS
     });
+    const startDateTs = Date.now() - normalizedDays * 24 * 60 * 60 * 1000;
+    const activities = baselineActivities.filter(
+      (item) => new Date(item.startDate).getTime() >= startDateTs
+    );
+
     const analysis = analyzeStravaActivities(activities);
     const user = await this.providerRepository.getUserById(userId);
     const dashboard = buildDashboardData({
       userEmail: user?.email,
       activities,
-      analysis
+      analysis,
+      baselineActivities
     });
     return {
       widgets: pickWidgets(dashboard, widgetKeys),

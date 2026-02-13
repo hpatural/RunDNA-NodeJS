@@ -1,4 +1,70 @@
-function buildActivityAnalysis(activity) {
+function buildActivityAnalysis(activity, { baseline } = {}) {
+  const metrics = computeActivityMetrics(activity);
+
+  if (!baseline || baseline.activityCount < 6) {
+    return buildAbsoluteActivityAnalysis(activity);
+  }
+
+  const intensity = weightedScore([
+    {
+      score: percentileScore(baseline.series.speedMps, metrics.speedMps, { higherIsBetter: true }),
+      weight: 0.45
+    },
+    {
+      score: percentileScore(baseline.series.heartRate, metrics.averageHeartRate, { higherIsBetter: true }),
+      weight: 0.35
+    },
+    {
+      score: percentileScore(baseline.series.elevationPerKm, metrics.elevationPerKm, { higherIsBetter: true }),
+      weight: 0.2
+    }
+  ]);
+
+  const endurance = weightedScore([
+    {
+      score: percentileScore(baseline.series.trainingLoad, metrics.trainingLoad, { higherIsBetter: true }),
+      weight: 0.45
+    },
+    {
+      score: percentileScore(baseline.series.distanceKm, metrics.distanceKm, { higherIsBetter: true }),
+      weight: 0.35
+    },
+    {
+      score: percentileScore(baseline.series.durationMinutes, metrics.durationMinutes, { higherIsBetter: true }),
+      weight: 0.2
+    }
+  ]);
+
+  const paceDeviation =
+    metrics.paceMinPerKm > 0 && baseline.medianPaceMinPerKm > 0
+      ? Math.abs(metrics.paceMinPerKm - baseline.medianPaceMinPerKm) / baseline.medianPaceMinPerKm
+      : null;
+  const stability = paceDeviation === null
+    ? 50
+    : percentileScore(baseline.series.paceDeviationRatio, paceDeviation, { higherIsBetter: false });
+
+  const elevationStress = percentileScore(
+    baseline.series.elevationPerKm,
+    metrics.elevationPerKm,
+    { higherIsBetter: true }
+  );
+
+  const recovery = weightedScore([
+    { score: intensity, weight: 0.5 },
+    { score: endurance, weight: 0.35 },
+    { score: elevationStress, weight: 0.15 }
+  ]);
+
+  return {
+    intensityScore: intensity,
+    enduranceLoad: endurance,
+    pacingStability: stability,
+    elevationStress,
+    recoveryCost: recovery
+  };
+}
+
+function buildAbsoluteActivityAnalysis(activity) {
   const distanceKm = Number(activity.distanceM ?? 0) / 1000;
   const durationMinutes = Math.round(Number(activity.movingTimeSec ?? 0) / 60);
   const paceMinPerKm = computePaceMinPerKm(activity);
@@ -34,7 +100,7 @@ function buildActivityAnalysis(activity) {
   };
 }
 
-function toEnrichedActivity(activity) {
+function toEnrichedActivity(activity, { baseline } = {}) {
   const paceMinPerKm = computePaceMinPerKm(activity);
   const averageHeartRate = Number(activity.averageHeartRate ?? 0);
   return {
@@ -46,16 +112,23 @@ function toEnrichedActivity(activity) {
     paceMinPerKm: paceMinPerKm > 0 ? round2(paceMinPerKm) : 0,
     elevationGain: Math.round(Number(activity.totalElevationGainM ?? 0)),
     avgHeartRate: averageHeartRate > 0 ? Math.round(averageHeartRate) : 0,
-    analysis: buildActivityAnalysis(activity)
+    analysis: buildActivityAnalysis(activity, { baseline })
   };
 }
 
-function buildDashboardData({ userEmail, activities, analysis }) {
+function buildDashboardData({ userEmail, activities, analysis, baselineActivities }) {
   const recentActivities = activities.slice(0, 24);
   const currentWeek = filterCurrentWeekFromMonday(activities);
   const last28 = filterByDays(activities, 28);
   const previous28 = filterByDaysBetween(activities, 56, 28);
   const displayName = deriveDisplayName(userEmail);
+
+  const baseline = buildUserBaseline(
+    Array.isArray(baselineActivities) && baselineActivities.length > 0
+      ? baselineActivities
+      : activities
+  );
+  const weeklyBaseline = baseline.weekly;
 
   const weekDistanceKm = round1(sum(currentWeek, (item) => Number(item.distanceM ?? 0)) / 1000);
   const weekRuns = currentWeek.length;
@@ -73,31 +146,64 @@ function buildDashboardData({ userEmail, activities, analysis }) {
   const longRunDistanceKm = longRun ? Math.round(Number(longRun.distanceM ?? 0) / 1000) : 0;
   const longRunElevation = longRun ? Math.round(Number(longRun.totalElevationGainM ?? 0)) : 0;
 
-  const enduranceIndex = clampScore(
-    (weekDistanceKm * 1.3) +
-    (longRunDistanceKm * 1.7) +
-    (Math.min(weekMovingHours, 12) * 4.2)
-  );
-  const speedIndex = clampScore(
-    paceToSpeedIndex(averagePaceMinKm7d)
-  );
+  const weekDistanceScore = percentileScore(weeklyBaseline.distanceKm, weekDistanceKm, {
+    higherIsBetter: true
+  });
+  const weekMovingTimeScore = percentileScore(weeklyBaseline.movingHours, weekMovingHours, {
+    higherIsBetter: true
+  });
+  const longRunScore = percentileScore(weeklyBaseline.longRunKm, longRunDistanceKm, {
+    higherIsBetter: true
+  });
+
+  const enduranceIndex = weightedScore([
+    { score: weekDistanceScore, weight: 0.5 },
+    { score: longRunScore, weight: 0.3 },
+    { score: weekMovingTimeScore, weight: 0.2 }
+  ]);
+
+  const weekAvgSpeedMps = paceToSpeedMps(averagePaceMinKm7d);
+  const speedIndex = percentileScore(weeklyBaseline.avgSpeedMps, weekAvgSpeedMps, {
+    higherIsBetter: true
+  });
 
   const trailSessionCount = recentActivities.filter((item) => elevationPerKm(item) >= 20).length;
   const elevationDensity = weekDistanceKm > 0 ? weekElevationGain / weekDistanceKm : 0;
-  const climbEfficiencyIndex = clampScore(
-    (elevationDensity * 1.4) + (trailSessionCount * 7)
+  const elevationDensityScore = percentileScore(
+    weeklyBaseline.elevationDensity,
+    elevationDensity,
+    { higherIsBetter: true }
   );
+  const weeklyTrailSessionScore = percentileScore(
+    weeklyBaseline.trailSessions,
+    trailSessionCount,
+    { higherIsBetter: true }
+  );
+
+  const climbEfficiencyIndex = weightedScore([
+    { score: elevationDensityScore, weight: 0.65 },
+    { score: weeklyTrailSessionScore, weight: 0.35 }
+  ]);
 
   const activeDays28 = countActiveDays(last28);
   const weeklyDistanceSeries = groupByWeek(activities, 10).map((week) => round2(week.distanceKm));
   const distanceVariation = coefficientOfVariation(weeklyDistanceSeries);
-  const consistencyIndex = clampScore(
-    (activeDays28 * 3.1) + ((1 - Math.min(distanceVariation, 1)) * 35)
-  );
+  const activeDaysScore = percentileScore(weeklyBaseline.activeDays, activeDays28 / 4, {
+    higherIsBetter: true
+  });
+  const regularityScore = percentileScore(weeklyBaseline.distanceVariation, distanceVariation, {
+    higherIsBetter: false
+  });
+
+  const consistencyIndex = weightedScore([
+    { score: activeDaysScore, weight: 0.55 },
+    { score: regularityScore, weight: 0.45 }
+  ]);
 
   const acuteLoad = weekDistanceKm + (weekElevationGain / 120) + (weekRuns * 1.8);
   const chronicDistanceKm = round2(sum(last28, (item) => Number(item.distanceM ?? 0)) / 1000);
-  const chronicLoad = (chronicDistanceKm / 4) + (sum(last28, (item) => Number(item.totalElevationGainM ?? 0)) / 480);
+  const chronicLoad =
+    (chronicDistanceKm / 4) + (sum(last28, (item) => Number(item.totalElevationGainM ?? 0)) / 480);
   const loadRatio = chronicLoad > 0 ? acuteLoad / chronicLoad : 0;
 
   const fallbackFatigue = clampScore((acuteLoad * 2.2) + (Math.max(loadRatio - 1, 0) * 48));
@@ -109,20 +215,17 @@ function buildDashboardData({ userEmail, activities, analysis }) {
     Number(analysis?.load?.readinessScore ?? (100 - fatigueScore))
   );
 
-  const trailReadinessIndex = clampScore(
-    (enduranceIndex * 0.40) +
-    (climbEfficiencyIndex * 0.35) +
-    (consistencyIndex * 0.25)
-  );
+  const trailReadinessIndex = weightedScore([
+    { score: enduranceIndex, weight: 0.4 },
+    { score: climbEfficiencyIndex, weight: 0.35 },
+    { score: consistencyIndex, weight: 0.25 }
+  ]);
 
   const runnerProfile = evaluateRunnerProfile({
-    weekDistanceKm,
-    weekRuns,
-    weekElevationGain,
-    averagePaceMinKm7d,
-    trailSessionCount,
-    longRunDistanceKm,
-    activeDays28
+    enduranceIndex,
+    speedIndex,
+    climbEfficiencyIndex,
+    consistencyIndex
   });
 
   const trendWeeks = groupByWeek(activities, 10);
@@ -158,7 +261,9 @@ function buildDashboardData({ userEmail, activities, analysis }) {
     ),
     last28DistanceKm: round1(
       sum(last28, (item) => Number(item.distanceM ?? 0)) / 1000
-    )
+    ),
+    baselineWeekDistanceKm: weeklyBaseline.distanceMedian,
+    baselineLongRunKm: weeklyBaseline.longRunMedian
   });
 
   const readinessAdvice = resolveReadinessAdvice(fatigueZone, recoveryIndex);
@@ -301,26 +406,28 @@ function resolveReadinessAdvice(fatigueZone, readinessScore) {
 }
 
 function evaluateRunnerProfile({
-  weekDistanceKm,
-  weekRuns,
-  weekElevationGain,
-  averagePaceMinKm7d,
-  trailSessionCount,
-  longRunDistanceKm,
-  activeDays28
+  enduranceIndex,
+  speedIndex,
+  climbEfficiencyIndex,
+  consistencyIndex
 }) {
-  const elevationDensity = weekDistanceKm > 0 ? weekElevationGain / weekDistanceKm : 0;
+  const axes = [
+    { key: 'endurance', score: enduranceIndex },
+    { key: 'speed', score: speedIndex },
+    { key: 'climb', score: climbEfficiencyIndex },
+    { key: 'consistency', score: consistencyIndex }
+  ].sort((a, b) => b.score - a.score);
 
-  if (trailSessionCount >= 2 && elevationDensity >= 28 && longRunDistanceKm >= 16) {
+  if (axes[0].key === 'climb' && axes[0].score >= 60) {
     return 'Traileur grimpeur';
   }
-  if (weekDistanceKm >= 55 && weekRuns >= 5 && activeDays28 >= 14) {
+  if (axes[0].key === 'endurance' && axes[0].score >= 60) {
     return 'Endurant structure';
   }
-  if (averagePaceMinKm7d > 0 && averagePaceMinKm7d <= 4.75 && weekRuns >= 3) {
+  if (axes[0].key === 'speed' && axes[0].score >= 60) {
     return 'Coureur tempo';
   }
-  if (weekRuns >= 4 && weekDistanceKm >= 30) {
+  if (consistencyIndex >= 55) {
     return 'Regulier en progression';
   }
   return 'Base en construction';
@@ -336,14 +443,16 @@ function buildInsights({
   longRunDistanceKm,
   elevationDensity,
   previous28DistanceKm,
-  last28DistanceKm
+  last28DistanceKm,
+  baselineWeekDistanceKm,
+  baselineLongRunKm
 }) {
   const insights = [
     `Semaine: ${weekRuns} sorties, ${weekDistanceKm} km, D+ ${weekElevationGain} m.`
   ];
 
   if (fatigueZone === 'Rouge') {
-    insights.push('Charge recente elevee: allege 24-48h et privilegie l’endurance facile.');
+    insights.push('Charge recente elevee: allege 24-48h et privilegie l endurance facile.');
   } else if (loadRatio > 1.35) {
     insights.push('La charge monte vite cette semaine: garde une seance qualitative maximum.');
   } else if (loadRatio > 0 && loadRatio < 0.75) {
@@ -352,8 +461,13 @@ function buildInsights({
     insights.push('Charge globalement bien progressive: bon contexte pour consolider.');
   }
 
-  if (longRunDistanceKm >= 18) {
-    insights.push(`Sortie longue solide (${longRunDistanceKm} km): bon marqueur d’endurance.`);
+  const weekVsBaseline = percentDelta(weekDistanceKm, baselineWeekDistanceKm);
+  const longRunVsBaseline = percentDelta(longRunDistanceKm, baselineLongRunKm);
+
+  if (Number.isFinite(longRunVsBaseline) && longRunVsBaseline >= 20) {
+    insights.push('Sortie longue au-dessus de ton niveau habituel: bonne progression d endurance.');
+  } else if (Number.isFinite(weekVsBaseline) && weekVsBaseline >= 25) {
+    insights.push('Volume hebdo nettement au-dessus de ta base: surveille recup et sommeil.');
   } else if (elevationDensity >= 22) {
     insights.push(`Bloc D+ utile (${Math.round(elevationDensity)} m/km): transfert trail positif.`);
   } else if (previous28DistanceKm > 0 && last28DistanceKm > previous28DistanceKm * 1.15) {
@@ -384,14 +498,90 @@ function groupByWeek(activities, weeksCount) {
     const speedDistance = sum(bucket, (item) => Number(item.distanceM ?? 0));
     const speedDuration = movingTimeSec;
     const distanceKm = speedDistance / 1000;
+    const activeDays = countActiveDays(bucket);
+    const trailSessions = bucket.filter((item) => elevationPerKm(item) >= 20).length;
+    const longRunKm = bucket.reduce((acc, item) => {
+      const currentKm = Number(item.distanceM ?? 0) / 1000;
+      return currentKm > acc ? currentKm : acc;
+    }, 0);
     weeks.push({
       movingTimeSec,
       elevationM,
       distanceKm,
+      activeDays,
+      trailSessions,
+      longRunKm,
+      elevationDensity: distanceKm > 0 ? elevationM / distanceKm : 0,
       avgSpeedMps: speedDuration > 0 ? speedDistance / speedDuration : 0
     });
   }
   return weeks;
+}
+
+function buildUserBaseline(activities) {
+  const cleanActivities = Array.isArray(activities)
+    ? activities.filter((item) => Number(item.distanceM ?? 0) > 0 && Number(item.movingTimeSec ?? 0) > 0)
+    : [];
+  const metrics = cleanActivities.map((item) => computeActivityMetrics(item));
+
+  const paceSamples = metrics.map((item) => item.paceMinPerKm).filter((value) => value > 0);
+  const medianPaceMinPerKm = median(paceSamples);
+  const paceDeviationRatio = metrics
+    .map((item) => {
+      if (item.paceMinPerKm <= 0 || medianPaceMinPerKm <= 0) {
+        return null;
+      }
+      return Math.abs(item.paceMinPerKm - medianPaceMinPerKm) / medianPaceMinPerKm;
+    })
+    .filter((value) => Number.isFinite(value));
+
+  const weekly = groupByWeek(cleanActivities, 12);
+  const weeklyDistance = weekly.map((item) => item.distanceKm).filter((value) => value > 0);
+  const weeklyMovingHours = weekly.map((item) => item.movingTimeSec / 3600).filter((value) => value > 0);
+  const weeklyLongRun = weekly.map((item) => item.longRunKm).filter((value) => value > 0);
+  const weeklySpeed = weekly.map((item) => item.avgSpeedMps).filter((value) => value > 0);
+  const weeklyElevationDensity = weekly
+    .map((item) => item.elevationDensity)
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const weeklyTrailSessions = weekly
+    .map((item) => item.trailSessions)
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const weeklyActiveDays = weekly
+    .map((item) => item.activeDays)
+    .filter((value) => Number.isFinite(value) && value >= 0);
+
+  const rollingDistanceVariation = [];
+  for (let i = 0; i <= weekly.length - 4; i += 1) {
+    rollingDistanceVariation.push(
+      coefficientOfVariation(weekly.slice(i, i + 4).map((item) => item.distanceKm))
+    );
+  }
+
+  return {
+    activityCount: metrics.length,
+    medianPaceMinPerKm,
+    series: {
+      speedMps: metrics.map((item) => item.speedMps),
+      heartRate: metrics.map((item) => item.averageHeartRate).filter((value) => value > 0),
+      elevationPerKm: metrics.map((item) => item.elevationPerKm),
+      trainingLoad: metrics.map((item) => item.trainingLoad),
+      distanceKm: metrics.map((item) => item.distanceKm),
+      durationMinutes: metrics.map((item) => item.durationMinutes),
+      paceDeviationRatio
+    },
+    weekly: {
+      distanceKm: weeklyDistance,
+      movingHours: weeklyMovingHours,
+      longRunKm: weeklyLongRun,
+      avgSpeedMps: weeklySpeed,
+      elevationDensity: weeklyElevationDensity,
+      trailSessions: weeklyTrailSessions,
+      activeDays: weeklyActiveDays,
+      distanceVariation: rollingDistanceVariation,
+      distanceMedian: median(weeklyDistance),
+      longRunMedian: median(weeklyLongRun)
+    }
+  };
 }
 
 function normalizeTrend(values) {
@@ -439,11 +629,11 @@ function averagePaceMinKm(activities) {
   return (totalMovingSec / 60) / (totalDistanceM / 1000);
 }
 
-function paceToSpeedIndex(paceMinKm) {
+function paceToSpeedMps(paceMinKm) {
   if (!paceMinKm || paceMinKm <= 0) {
     return 0;
   }
-  return (7.2 - paceMinKm) * 28;
+  return 1000 / (paceMinKm * 60);
 }
 
 function elevationPerKm(activity) {
@@ -525,6 +715,96 @@ function resolveFocus({
   }
 }
 
+function computeActivityMetrics(activity) {
+  const distanceKm = Number(activity.distanceM ?? 0) / 1000;
+  const movingTimeSec = Number(activity.movingTimeSec ?? 0);
+  const durationMinutes = movingTimeSec / 60;
+  const paceMinPerKm = computePaceMinPerKm(activity);
+  const speedMps = movingTimeSec > 0 ? Number(activity.distanceM ?? 0) / movingTimeSec : 0;
+  const averageHeartRate = Number(activity.averageHeartRate ?? 0);
+  const elevationGain = Number(activity.totalElevationGainM ?? 0);
+  const elevationPerKmValue = elevationPerKm(activity);
+  const hrRatio = averageHeartRate > 0 ? Math.min(1.08, averageHeartRate / 190) : 0.65;
+  const trainingLoad = (durationMinutes * (1 + hrRatio * 1.9)) + (elevationGain / 85);
+
+  return {
+    distanceKm,
+    durationMinutes,
+    paceMinPerKm,
+    speedMps,
+    averageHeartRate,
+    elevationGain,
+    elevationPerKm: elevationPerKmValue,
+    trainingLoad
+  };
+}
+
+function weightedScore(entries) {
+  const valid = entries.filter((entry) => Number.isFinite(entry.score) && entry.weight > 0);
+  if (valid.length === 0) {
+    return 0;
+  }
+  const totalWeight = valid.reduce((sum, entry) => sum + entry.weight, 0);
+  const weighted = valid.reduce((sum, entry) => sum + (entry.score * entry.weight), 0);
+  return clampScore(weighted / totalWeight);
+}
+
+function percentileScore(series, value, { higherIsBetter = true } = {}) {
+  const clean = (Array.isArray(series) ? series : [])
+    .filter((item) => Number.isFinite(item))
+    .sort((a, b) => a - b);
+
+  if (!Number.isFinite(value) || clean.length === 0) {
+    return 50;
+  }
+
+  if (clean.length < 5) {
+    const min = clean[0];
+    const max = clean[clean.length - 1];
+    if (max <= min) {
+      return 50;
+    }
+    const normalized = (value - min) / (max - min);
+    const score = higherIsBetter ? normalized * 100 : (1 - normalized) * 100;
+    return clampScore(score);
+  }
+
+  let lowerCount = 0;
+  let equalCount = 0;
+  for (const item of clean) {
+    if (item < value) {
+      lowerCount += 1;
+    } else if (item === value) {
+      equalCount += 1;
+    }
+  }
+
+  const rank = (lowerCount + (equalCount * 0.5)) / clean.length;
+  const score = higherIsBetter ? rank * 100 : (1 - rank) * 100;
+  return clampScore(score);
+}
+
+function median(values) {
+  const clean = (Array.isArray(values) ? values : [])
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (clean.length === 0) {
+    return 0;
+  }
+  const middle = Math.floor(clean.length / 2);
+  if (clean.length % 2 === 0) {
+    return (clean[middle - 1] + clean[middle]) / 2;
+  }
+  return clean[middle];
+}
+
+function percentDelta(value, baseline) {
+  if (!Number.isFinite(value) || !Number.isFinite(baseline) || baseline <= 0) {
+    return null;
+  }
+  return ((value - baseline) / baseline) * 100;
+}
+
 function round2(value) {
   return Math.round(value * 100) / 100;
 }
@@ -536,5 +816,6 @@ function round1(value) {
 module.exports = {
   toEnrichedActivity,
   buildDashboardData,
-  pickWidgets
+  pickWidgets,
+  buildUserBaseline
 };
