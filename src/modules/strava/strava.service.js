@@ -55,6 +55,19 @@ class StravaService {
     }
 
     const tokenData = await this.client.exchangeCodeForToken(code);
+    if (tokenData.athleteId) {
+      const existingForAthlete = await this.repository.getConnectionByAthleteId(
+        tokenData.athleteId
+      );
+      if (existingForAthlete && existingForAthlete.userId !== userId) {
+        const error = new Error(
+          'This Strava account is already connected to another RunDNA account'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+    }
+
     const connection = await this.repository.upsertConnection({
       userId,
       athleteId: tokenData.athleteId,

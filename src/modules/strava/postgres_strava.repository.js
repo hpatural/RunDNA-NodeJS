@@ -4,39 +4,53 @@ class PostgresStravaRepository {
   }
 
   async upsertConnection(connection) {
-    const result = await this.pool.query(
-      `
-        INSERT INTO strava_connections (
-          user_id,
-          athlete_id,
-          scope,
-          access_token,
-          refresh_token,
-          token_expires_at,
-          connected_at,
-          updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-        ON CONFLICT (user_id)
-        DO UPDATE SET
-          athlete_id = EXCLUDED.athlete_id,
-          scope = EXCLUDED.scope,
-          access_token = EXCLUDED.access_token,
-          refresh_token = EXCLUDED.refresh_token,
-          token_expires_at = EXCLUDED.token_expires_at,
-          updated_at = NOW()
-        RETURNING user_id, athlete_id, scope, access_token, refresh_token, token_expires_at, connected_at, updated_at, last_synced_at
-      `,
-      [
-        connection.userId,
-        connection.athleteId,
-        connection.scope,
-        connection.accessToken,
-        connection.refreshToken,
-        connection.tokenExpiresAt
-      ]
-    );
-    return this.#mapConnection(result.rows[0]);
+    try {
+      const result = await this.pool.query(
+        `
+          INSERT INTO strava_connections (
+            user_id,
+            athlete_id,
+            scope,
+            access_token,
+            refresh_token,
+            token_expires_at,
+            connected_at,
+            updated_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+          ON CONFLICT (user_id)
+          DO UPDATE SET
+            athlete_id = EXCLUDED.athlete_id,
+            scope = EXCLUDED.scope,
+            access_token = EXCLUDED.access_token,
+            refresh_token = EXCLUDED.refresh_token,
+            token_expires_at = EXCLUDED.token_expires_at,
+            updated_at = NOW()
+          RETURNING user_id, athlete_id, scope, access_token, refresh_token, token_expires_at, connected_at, updated_at, last_synced_at
+        `,
+        [
+          connection.userId,
+          connection.athleteId,
+          connection.scope,
+          connection.accessToken,
+          connection.refreshToken,
+          connection.tokenExpiresAt
+        ]
+      );
+      return this.#mapConnection(result.rows[0]);
+    } catch (error) {
+      if (
+        error?.code === '23505' &&
+        String(error?.constraint || '').includes('idx_strava_connections_athlete_id')
+      ) {
+        const domainError = new Error(
+          'This Strava account is already connected to another RunDNA account'
+        );
+        domainError.statusCode = 409;
+        throw domainError;
+      }
+      throw error;
+    }
   }
 
   async getConnectionByUserId(userId) {
