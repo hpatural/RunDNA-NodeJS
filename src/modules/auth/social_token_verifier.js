@@ -21,6 +21,7 @@ class SocialTokenVerifier {
 
     const issuer = String(payload.iss ?? '');
     const aud = String(payload.aud ?? '');
+    const azp = String(payload.azp ?? '');
     const sub = String(payload.sub ?? '');
     const email = this.#normalizeEmail(payload.email);
     const emailVerified = this.#asBoolean(payload.email_verified);
@@ -31,7 +32,7 @@ class SocialTokenVerifier {
     if (issuer !== 'accounts.google.com' && issuer !== 'https://accounts.google.com') {
       return this.#unauthorized('Invalid Google token issuer');
     }
-    if (!this.#isAllowedAudience(aud, this.env.googleOauthClientIds)) {
+    if (!this.#isAllowedAudience([aud, azp], this.env.googleOauthClientIds)) {
       return this.#unauthorized('Google token audience is not allowed');
     }
 
@@ -72,7 +73,7 @@ class SocialTokenVerifier {
           : undefined
       });
     } catch {
-      return this.#unauthorized('Invalid Apple token');
+      return this.#unauthorized('Invalid Apple token audience/signature');
     }
 
     const sub = String(payload.sub ?? '');
@@ -131,14 +132,17 @@ class SocialTokenVerifier {
     return body;
   }
 
-  #isAllowedAudience(aud, allowedAudiences) {
-    if (!aud) {
+  #isAllowedAudience(audiences, allowedAudiences) {
+    const normalizedAudiences = (Array.isArray(audiences) ? audiences : [audiences])
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean);
+    if (normalizedAudiences.length === 0) {
       return false;
     }
     if (!Array.isArray(allowedAudiences) || allowedAudiences.length === 0) {
       return true;
     }
-    return allowedAudiences.includes(aud);
+    return normalizedAudiences.some((value) => allowedAudiences.includes(value));
   }
 
   #normalizeEmail(rawEmail) {
