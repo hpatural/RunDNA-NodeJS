@@ -72,6 +72,8 @@ Or
    - Widgets dashboard: `GET /v1/dashboard/widgets`
    - Analyse brute Strava (optionnel): `GET /v1/analysis/strava?days=30`
 
+Note: seules les activites Strava de type `Run` et `TrailRun` sont ingerees et exposees.
+
 ## Analysis output
 `GET /v1/analysis/strava` returns:
 - summary (distance, D+, moving time, pace, HR)

@@ -215,7 +215,12 @@ class PostgresStravaRepository {
     return activities.length;
   }
 
-  async getActivities(userId, { startDate, endDate, limit = 1000 } = {}) {
+  async getActivities(userId, {
+    startDate,
+    endDate,
+    limit = 1000,
+    sportTypes
+  } = {}) {
     const conditions = ['user_id = $1'];
     const params = [userId];
 
@@ -226,6 +231,10 @@ class PostgresStravaRepository {
     if (endDate) {
       params.push(endDate);
       conditions.push(`start_date <= $${params.length}`);
+    }
+    if (Array.isArray(sportTypes) && sportTypes.length > 0) {
+      params.push(sportTypes);
+      conditions.push(`sport_type = ANY($${params.length}::text[])`);
     }
     params.push(limit);
 
@@ -246,16 +255,23 @@ class PostgresStravaRepository {
     return result.rows.map((row) => this.#mapActivity(row));
   }
 
-  async getLatestActivityDate(userId) {
+  async getLatestActivityDate(userId, { sportTypes } = {}) {
+    const conditions = ['user_id = $1'];
+    const params = [userId];
+    if (Array.isArray(sportTypes) && sportTypes.length > 0) {
+      params.push(sportTypes);
+      conditions.push(`sport_type = ANY($${params.length}::text[])`);
+    }
+
     const result = await this.pool.query(
       `
         SELECT start_date
         FROM strava_activities
-        WHERE user_id = $1
+        WHERE ${conditions.join(' AND ')}
         ORDER BY start_date DESC
         LIMIT 1
       `,
-      [userId]
+      params
     );
     if (!result.rows[0]) {
       return null;

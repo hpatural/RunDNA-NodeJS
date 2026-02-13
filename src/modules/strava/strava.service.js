@@ -6,6 +6,8 @@ const {
   pickWidgets
 } = require('./strava.mobile');
 
+const SUPPORTED_STRAVA_SPORTS = ['Run', 'TrailRun'];
+
 class StravaService {
   constructor({ repository, providerRepository, client, env, logger }) {
     this.repository = repository;
@@ -140,7 +142,9 @@ class StravaService {
     }
 
     const connection = await this.#ensureFreshAccessToken(baseConnection, force);
-    const latestActivityDate = await this.repository.getLatestActivityDate(userId);
+    const latestActivityDate = await this.repository.getLatestActivityDate(userId, {
+      sportTypes: SUPPORTED_STRAVA_SPORTS
+    });
     const after = latestActivityDate
       ? Math.floor(new Date(latestActivityDate).getTime() / 1000) - 2 * 24 * 60 * 60
       : undefined;
@@ -156,7 +160,8 @@ class StravaService {
       if (pageItems.length === 0) {
         break;
       }
-      collected.push(...pageItems.map((item) => this.#mapStravaActivity(item)));
+      const runnableItems = pageItems.filter((item) => this.#isSupportedSport(item));
+      collected.push(...runnableItems.map((item) => this.#mapStravaActivity(item)));
       if (pageItems.length < 100) {
         break;
       }
@@ -180,7 +185,8 @@ class StravaService {
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     const activities = await this.repository.getActivities(userId, {
       startDate,
-      limit: 2000
+      limit: 2000,
+      sportTypes: SUPPORTED_STRAVA_SPORTS
     });
     return {
       days,
@@ -204,7 +210,8 @@ class StravaService {
     }
     const rows = await this.repository.getActivities(userId, {
       endDate: beforeIso,
-      limit: normalizedLimit + 1
+      limit: normalizedLimit + 1,
+      sportTypes: SUPPORTED_STRAVA_SPORTS
     });
 
     const pageItems = rows.slice(0, normalizedLimit);
@@ -222,7 +229,8 @@ class StravaService {
     const startDate = new Date(Date.now() - normalizedDays * 24 * 60 * 60 * 1000).toISOString();
     const activities = await this.repository.getActivities(userId, {
       startDate,
-      limit: 2400
+      limit: 2400,
+      sportTypes: SUPPORTED_STRAVA_SPORTS
     });
     const analysis = analyzeStravaActivities(activities);
     const user = await this.providerRepository.getUserById(userId);
@@ -407,6 +415,11 @@ class StravaService {
       achievementCount: Number(activity.achievement_count ?? 0),
       rawPayload: activity
     };
+  }
+
+  #isSupportedSport(activity) {
+    const sportType = String(activity?.sport_type ?? activity?.type ?? '');
+    return SUPPORTED_STRAVA_SPORTS.includes(sportType);
   }
 
   #normalizeRelayUri(relayUri) {

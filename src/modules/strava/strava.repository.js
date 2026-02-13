@@ -86,7 +86,12 @@ class StravaRepository {
     return merged.length;
   }
 
-  async getActivities(userId, { startDate, endDate, limit = 1000 } = {}) {
+  async getActivities(userId, {
+    startDate,
+    endDate,
+    limit = 1000,
+    sportTypes
+  } = {}) {
     const all = this.activitiesByUserId.get(userId) ?? [];
     const filtered = all.filter((item) => {
       const timestamp = new Date(item.startDate).getTime();
@@ -96,6 +101,11 @@ class StravaRepository {
       if (endDate && timestamp > new Date(endDate).getTime()) {
         return false;
       }
+      if (Array.isArray(sportTypes) && sportTypes.length > 0) {
+        if (!sportTypes.includes(item.sportType)) {
+          return false;
+        }
+      }
       return true;
     });
 
@@ -103,12 +113,15 @@ class StravaRepository {
     return filtered.slice(0, limit);
   }
 
-  async getLatestActivityDate(userId) {
+  async getLatestActivityDate(userId, { sportTypes } = {}) {
     const all = this.activitiesByUserId.get(userId) ?? [];
-    if (all.length === 0) {
+    const filtered = Array.isArray(sportTypes) && sportTypes.length > 0
+      ? all.filter((item) => sportTypes.includes(item.sportType))
+      : all;
+    if (filtered.length === 0) {
       return null;
     }
-    const latest = all.reduce((acc, item) => {
+    const latest = filtered.reduce((acc, item) => {
       if (!acc) {
         return item;
       }
