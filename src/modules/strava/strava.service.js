@@ -176,6 +176,7 @@ class StravaService {
   }
 
   async getAnalysis(userId, { days = 30 } = {}) {
+    await this.#autoSyncOnRead(userId);
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     const activities = await this.repository.getActivities(userId, {
       startDate,
@@ -189,6 +190,7 @@ class StravaService {
   }
 
   async getEnrichedActivities(userId, { limit = 20, before } = {}) {
+    await this.#autoSyncOnRead(userId);
     const normalizedLimit = Math.max(1, Math.min(60, Number(limit) || 20));
     let beforeIso;
     if (before) {
@@ -215,6 +217,7 @@ class StravaService {
   }
 
   async getDashboardWidgets(userId, { days = 70, widgetKeys = [] } = {}) {
+    await this.#autoSyncOnRead(userId);
     const normalizedDays = Math.max(14, Math.min(180, Number(days) || 70));
     const startDate = new Date(Date.now() - normalizedDays * 24 * 60 * 60 * 1000).toISOString();
     const activities = await this.repository.getActivities(userId, {
@@ -326,6 +329,36 @@ class StravaService {
       return connection;
     }
     return this.#refreshConnectionTokens(connection);
+  }
+
+  async #autoSyncOnRead(userId) {
+    if (!this.env.stravaAutoSyncOnRead || !this.isConfigured()) {
+      return;
+    }
+
+    const connection = await this.repository.getConnectionByUserId(userId);
+    if (!connection) {
+      return;
+    }
+
+    const staleMinutes = Math.max(1, this.env.stravaAutoSyncReadStaleMinutes);
+    const staleThresholdMs = Date.now() - staleMinutes * 60 * 1000;
+    const lastSyncedMs = connection.lastSyncedAt
+      ? new Date(connection.lastSyncedAt).getTime()
+      : 0;
+
+    if (lastSyncedMs > staleThresholdMs) {
+      return;
+    }
+
+    try {
+      await this.syncUserActivities(userId, { force: false });
+    } catch (error) {
+      this.logger.warn(
+        { err: error, userId },
+        'Auto sync on read failed; returning available activities'
+      );
+    }
   }
 
   async #refreshConnectionTokens(connection) {

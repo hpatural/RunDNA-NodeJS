@@ -32,7 +32,9 @@ const env = {
   stravaTokenRefreshBufferSeconds: Number(process.env.STRAVA_TOKEN_REFRESH_BUFFER_SECONDS ?? 900),
   stravaTokenRefreshIntervalMinutes: Number(process.env.STRAVA_TOKEN_REFRESH_INTERVAL_MINUTES ?? 10),
   stravaSyncIntervalMinutes: Number(process.env.STRAVA_SYNC_INTERVAL_MINUTES ?? 30),
-  stravaSyncMaxPages: Number(process.env.STRAVA_SYNC_MAX_PAGES ?? 10)
+  stravaSyncMaxPages: Number(process.env.STRAVA_SYNC_MAX_PAGES ?? 10),
+  stravaAutoSyncOnRead: String(process.env.STRAVA_AUTO_SYNC_ON_READ ?? 'true') === 'true',
+  stravaAutoSyncReadStaleMinutes: Number(process.env.STRAVA_AUTO_SYNC_READ_STALE_MINUTES ?? 15)
 };
 
 module.exports = { env };

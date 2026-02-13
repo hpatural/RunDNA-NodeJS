@@ -54,6 +54,8 @@ Optional Strava tuning:
 - `STRAVA_TOKEN_REFRESH_INTERVAL_MINUTES` (default: `10`)
 - `STRAVA_SYNC_INTERVAL_MINUTES` (default: `30`)
 - `STRAVA_SYNC_MAX_PAGES` (default: `10`)
+- `STRAVA_AUTO_SYNC_ON_READ` (default: `true`)
+- `STRAVA_AUTO_SYNC_READ_STALE_MINUTES` (default: `15`)
 
 ## Strava flow
 1. App calls `GET /v1/providers/strava/oauth/start` with bearer token.
