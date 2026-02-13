@@ -229,6 +229,7 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
   });
 
   const trendWeeks = groupByWeek(activities, 10);
+  const weeklyComparisons = computeWeeklyComparisons(trendWeeks, 3);
   const speedTrend = normalizeTrend(
     trendWeeks.map((week) => week.avgSpeedMps)
   );
@@ -263,7 +264,10 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
       sum(last28, (item) => Number(item.distanceM ?? 0)) / 1000
     ),
     baselineWeekDistanceKm: weeklyBaseline.distanceMedian,
-    baselineLongRunKm: weeklyBaseline.longRunMedian
+    baselineLongRunKm: weeklyBaseline.longRunMedian,
+    speedDeltaPct: weeklyComparisons.speedDeltaPct,
+    volumeDeltaPct: weeklyComparisons.volumeDeltaPct,
+    elevationDeltaPct: weeklyComparisons.elevationDeltaPct
   });
 
   const readinessAdvice = resolveReadinessAdvice(fatigueZone, recoveryIndex);
@@ -275,6 +279,8 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
     climbEfficiencyIndex,
     consistencyIndex,
     trailReadinessIndex
+    ,
+    loadRatio
   });
 
   return {
@@ -301,7 +307,10 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
       trailReadinessIndex,
       speedTrend,
       enduranceTrend,
-      elevationTrend
+      elevationTrend,
+      speedDeltaPct: weeklyComparisons.speedDeltaPct,
+      volumeDeltaPct: weeklyComparisons.volumeDeltaPct,
+      elevationDeltaPct: weeklyComparisons.elevationDeltaPct
     },
     insights: {
       items: insights
@@ -445,26 +454,27 @@ function buildInsights({
   previous28DistanceKm,
   last28DistanceKm,
   baselineWeekDistanceKm,
-  baselineLongRunKm
+  baselineLongRunKm,
+  speedDeltaPct,
+  volumeDeltaPct,
+  elevationDeltaPct
 }) {
   const insights = [
     `Semaine: ${weekRuns} sorties, ${weekDistanceKm} km, D+ ${weekElevationGain} m.`
   ];
 
-  if (fatigueZone === 'Rouge') {
-    insights.push('Charge recente elevee: allege 24-48h et privilegie l endurance facile.');
-  } else if (loadRatio > 1.35) {
-    insights.push('La charge monte vite cette semaine: garde une seance qualitative maximum.');
-  } else if (loadRatio > 0 && loadRatio < 0.75) {
-    insights.push('Charge plutot basse: tu peux reintroduire un bloc de progression.');
-  } else {
-    insights.push('Charge globalement bien progressive: bon contexte pour consolider.');
-  }
+  insights.push(
+    `Vs 3 semaines precedentes: vitesse ${formatSignedPct(speedDeltaPct)}, volume ${formatSignedPct(volumeDeltaPct)}, D+ ${formatSignedPct(elevationDeltaPct)}.`
+  );
 
   const weekVsBaseline = percentDelta(weekDistanceKm, baselineWeekDistanceKm);
   const longRunVsBaseline = percentDelta(longRunDistanceKm, baselineLongRunKm);
 
-  if (Number.isFinite(longRunVsBaseline) && longRunVsBaseline >= 20) {
+  if (fatigueZone === 'Rouge') {
+    insights.push('Charge trop elevee: fais 2 jours faciles, puis une seule seance de qualite cette semaine.');
+  } else if (loadRatio > 1.35) {
+    insights.push('Tu charges vite: garde une seance intense max et privilegie la recuperation active.');
+  } else if (Number.isFinite(longRunVsBaseline) && longRunVsBaseline >= 20) {
     insights.push('Sortie longue au-dessus de ton niveau habituel: bonne progression d endurance.');
   } else if (Number.isFinite(weekVsBaseline) && weekVsBaseline >= 25) {
     insights.push('Volume hebdo nettement au-dessus de ta base: surveille recup et sommeil.');
@@ -671,12 +681,16 @@ function resolveFocus({
   speedIndex,
   climbEfficiencyIndex,
   consistencyIndex,
-  trailReadinessIndex
+  trailReadinessIndex,
+  loadRatio
 }) {
-  if (fatigueZone === 'Rouge' || fatigueScore >= 75) {
+  if (fatigueZone === 'Rouge' || fatigueScore >= 75 || loadRatio >= 1.45) {
+    const subtitle = fatigueScore >= 85 || loadRatio >= 1.55
+      ? '72h faciles: 2 footings Z1-Z2 + 1 repos complet. Reprise qualite ensuite.'
+      : '48h legeres: reduis volume de 30% et garde uniquement de l endurance facile.';
     return {
-      focusTitle: 'Focus recuperation 5 jours',
-      focusSubtitle: 'Priorite: reduire la fatigue avant de relancer un bloc qualitatif.'
+      focusTitle: 'Focus recuperation active',
+      focusSubtitle: subtitle
     };
   }
 
@@ -709,10 +723,66 @@ function resolveFocus({
           ? 'Focus bloc trail 10 jours'
           : 'Focus regularite 10 jours',
         focusSubtitle: trailReadinessIndex >= 65
-          ? 'Priorite: consolider endurance et capacite en montee (D+).'
+          ? 'Priorite: consolider endurance et capacite en montee (1 sortie vallonnee + 1 sortie longue).'
           : 'Priorite: stabiliser le rythme hebdo avec 3-4 sorties constantes.'
       };
   }
+}
+
+function computeWeeklyComparisons(weeks, previousCount = 3) {
+  const clean = Array.isArray(weeks) ? weeks : [];
+  if (clean.length === 0) {
+    return {
+      speedDeltaPct: 0,
+      volumeDeltaPct: 0,
+      elevationDeltaPct: 0
+    };
+  }
+
+  const current = clean[clean.length - 1];
+  const previousSlice = clean.slice(
+    Math.max(0, clean.length - (previousCount + 1)),
+    clean.length - 1
+  );
+
+  const previousAvg = averageWeeklyBucket(previousSlice);
+  return {
+    speedDeltaPct: round1(percentDeltaOrZero(current.avgSpeedMps, previousAvg.avgSpeedMps)),
+    volumeDeltaPct: round1(percentDeltaOrZero(current.distanceKm, previousAvg.distanceKm)),
+    elevationDeltaPct: round1(percentDeltaOrZero(current.elevationM, previousAvg.elevationM))
+  };
+}
+
+function averageWeeklyBucket(weeks) {
+  if (!Array.isArray(weeks) || weeks.length === 0) {
+    return {
+      avgSpeedMps: 0,
+      distanceKm: 0,
+      elevationM: 0
+    };
+  }
+
+  return {
+    avgSpeedMps: sum(weeks, (item) => Number(item.avgSpeedMps ?? 0)) / weeks.length,
+    distanceKm: sum(weeks, (item) => Number(item.distanceKm ?? 0)) / weeks.length,
+    elevationM: sum(weeks, (item) => Number(item.elevationM ?? 0)) / weeks.length
+  };
+}
+
+function percentDeltaOrZero(value, baseline) {
+  const delta = percentDelta(value, baseline);
+  return Number.isFinite(delta) ? delta : 0;
+}
+
+function formatSignedPct(value) {
+  if (!Number.isFinite(value)) {
+    return '0%';
+  }
+  const rounded = round1(value);
+  if (rounded > 0) {
+    return `+${rounded}%`;
+  }
+  return `${rounded}%`;
 }
 
 function computeActivityMetrics(activity) {
