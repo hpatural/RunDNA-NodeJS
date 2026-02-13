@@ -257,6 +257,11 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
   };
 
   const trainingDistribution = computeIntensityDistribution(last28, baseline);
+  const trainingLoadBalance = buildTrainingLoadBalance({
+    acuteLoad,
+    chronicLoad,
+    analysis
+  });
   const weeklyTarget = buildWeeklyTarget({
     weekDistanceKm,
     trendWeeks,
@@ -314,6 +319,7 @@ function buildDashboardData({ userEmail, activities, analysis, baselineActivitie
     },
     quickStats,
     trainingDistribution,
+    trainingLoadBalance,
     weeklyTarget,
     consistency,
     elevationFocus: {
@@ -350,6 +356,7 @@ function pickWidgets(allWidgets, requested) {
     'fatigue',
     'quickStats',
     'trainingDistribution',
+    'trainingLoadBalance',
     'weeklyTarget',
     'consistency',
     'elevationFocus',
@@ -652,6 +659,39 @@ function computeIntensityDistribution(activities, baseline) {
     moderatePct: Math.round((moderate / total) * 100),
     hardPct: Math.round((hard / total) * 100),
     sampleCount: total
+  };
+}
+
+function buildTrainingLoadBalance({ acuteLoad, chronicLoad, analysis }) {
+  const acute = Number(analysis?.load?.acuteLoad7d ?? acuteLoad ?? 0);
+  const chronic = Number(analysis?.load?.chronicLoad28d ?? chronicLoad ?? 0);
+  const ratio = chronic > 0 ? acute / chronic : 0;
+
+  let zone = 'Insuffisante';
+  let advice = 'Charge faible: ajoute progressivement du volume facile.';
+  let riskScore = 20;
+
+  if (ratio >= 0.8 && ratio <= 1.3) {
+    zone = 'Optimale';
+    advice = 'Charge bien calibree: tu peux maintenir ce rythme.';
+    riskScore = 35;
+  } else if (ratio > 1.3 && ratio <= 1.5) {
+    zone = 'Elevee';
+    advice = 'Charge en hausse: garde une seule seance intense et optimise la recup.';
+    riskScore = 62;
+  } else if (ratio > 1.5) {
+    zone = 'Risque';
+    advice = 'Risque de surcharge: baisse volume/intensite 48-72h.';
+    riskScore = 82;
+  }
+
+  return {
+    acuteLoad7d: round1(acute),
+    chronicLoad28d: round1(chronic),
+    ratio: round2(ratio),
+    zone,
+    riskScore,
+    advice
   };
 }
 
