@@ -2,7 +2,7 @@ const Fastify = require('fastify');
 const cors = require('@fastify/cors');
 
 const { env } = require('./config/env');
-const { createPostgresPool, ensureAuthSchema } = require('./db/postgres');
+const { createPostgresPool, resetDatabase, ensureAuthSchema } = require('./db/postgres');
 const authGuardPlugin = require('./plugins/auth-guard');
 const { PostgresAuthRepository } = require('./modules/auth/postgres_auth.repository');
 const { AuthService } = require('./modules/auth/auth.service');
@@ -43,6 +43,10 @@ function buildApp() {
   const stravaRepository = new PostgresStravaRepository(pool);
 
   app.addHook('onReady', async () => {
+    if (env.dropDatabaseOnStartup) {
+      app.log.warn('DROP_DATABASE_ON_STARTUP=true: dropping all application tables');
+      await resetDatabase(pool);
+    }
     await ensureAuthSchema(pool);
   });
 

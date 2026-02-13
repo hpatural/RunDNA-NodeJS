@@ -7,6 +7,17 @@ function createPostgresPool(env) {
   });
 }
 
+async function resetDatabase(pool) {
+  await pool.query(`
+    DROP TABLE IF EXISTS strava_webhook_events CASCADE;
+    DROP TABLE IF EXISTS strava_activities CASCADE;
+    DROP TABLE IF EXISTS strava_connections CASCADE;
+    DROP TABLE IF EXISTS provider_connections CASCADE;
+    DROP TABLE IF EXISTS refresh_tokens CASCADE;
+    DROP TABLE IF EXISTS users CASCADE;
+  `);
+}
+
 async function ensureAuthSchema(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -105,4 +116,4 @@ async function ensureAuthSchema(pool) {
   `);
 }
 
-module.exports = { createPostgresPool, ensureAuthSchema };
+module.exports = { createPostgresPool, resetDatabase, ensureAuthSchema };

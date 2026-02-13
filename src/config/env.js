@@ -17,6 +17,7 @@ const env = {
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
   databaseUrl: process.env.DATABASE_URL ?? '',
   databaseSsl: String(process.env.DATABASE_SSL ?? 'false') === 'true',
+  dropDatabaseOnStartup: String(process.env.DROP_DATABASE_ON_STARTUP ?? 'false') === 'true',
   jwtAccessSecret: requireEnv('JWT_ACCESS_SECRET', 'change_me_access_secret'),
   jwtRefreshSecret: requireEnv('JWT_REFRESH_SECRET', 'change_me_refresh_secret'),
   jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
