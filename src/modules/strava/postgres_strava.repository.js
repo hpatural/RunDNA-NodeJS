@@ -4,6 +4,17 @@ class PostgresStravaRepository {
   }
 
   async upsertConnection(connection) {
+    if (connection.athleteId) {
+      const existing = await this.getConnectionByAthleteId(connection.athleteId);
+      if (existing && existing.userId !== connection.userId) {
+        const domainError = new Error(
+          'This Strava account is already connected to another RunDNA account'
+        );
+        domainError.statusCode = 409;
+        throw domainError;
+      }
+    }
+
     try {
       const result = await this.pool.query(
         `

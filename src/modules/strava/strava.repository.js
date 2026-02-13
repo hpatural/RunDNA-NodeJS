@@ -8,6 +8,17 @@ class StravaRepository {
   }
 
   async upsertConnection(connection) {
+    if (connection.athleteId) {
+      const linkedUserId = this.userIdByAthleteId.get(String(connection.athleteId));
+      if (linkedUserId && linkedUserId !== connection.userId) {
+        const error = new Error(
+          'This Strava account is already connected to another RunDNA account'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+    }
+
     const nowIso = new Date().toISOString();
     const existing = this.connectionsByUserId.get(connection.userId);
     const normalized = {
