@@ -19,6 +19,20 @@ class PostgresAuthRepository {
     return result.rows[0] ? this.mapUser(result.rows[0]) : null;
   }
 
+  async findUserByIdentity(provider, providerUserId) {
+    const result = await this.pool.query(
+      `
+        SELECT u.id, u.email, u.password_hash, u.created_at
+        FROM user_identities ui
+        JOIN users u ON u.id = ui.user_id
+        WHERE ui.provider = $1 AND ui.provider_user_id = $2
+        LIMIT 1
+      `,
+      [provider, providerUserId]
+    );
+    return result.rows[0] ? this.mapUser(result.rows[0]) : null;
+  }
+
   async createUser(user) {
     const result = await this.pool.query(
       `
@@ -40,6 +54,19 @@ class PostgresAuthRepository {
         DO UPDATE SET refresh_token = EXCLUDED.refresh_token, updated_at = NOW()
       `,
       [userId, refreshToken]
+    );
+  }
+
+  async linkIdentity({ userId, provider, providerUserId, email }) {
+    await this.pool.query(
+      `
+        INSERT INTO user_identities (user_id, provider, provider_user_id, email)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (provider, provider_user_id)
+        DO UPDATE SET email = EXCLUDED.email
+        WHERE user_identities.user_id = EXCLUDED.user_id
+      `,
+      [userId, provider, providerUserId, email]
     );
   }
 

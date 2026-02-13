@@ -6,6 +6,7 @@ const { createPostgresPool, resetDatabase, ensureAuthSchema } = require('./db/po
 const authGuardPlugin = require('./plugins/auth-guard');
 const { PostgresAuthRepository } = require('./modules/auth/postgres_auth.repository');
 const { AuthService } = require('./modules/auth/auth.service');
+const { SocialTokenVerifier } = require('./modules/auth/social_token_verifier');
 const { authRoutes } = require('./modules/auth/auth.routes');
 const { PostgresProviderRepository } = require('./modules/providers/postgres_provider.repository');
 const { ProviderService } = require('./modules/providers/provider.service');
@@ -54,7 +55,8 @@ function buildApp() {
     await pool.end();
   });
 
-  const authService = new AuthService({ repository: authRepository, env });
+  const socialTokenVerifier = new SocialTokenVerifier({ env });
+  const authService = new AuthService({ repository: authRepository, env, socialTokenVerifier });
   const providerService = new ProviderService({ repository: providerRepository });
   const stravaClient = new StravaApiClient({ env, logger: app.log });
   const stravaService = new StravaService({

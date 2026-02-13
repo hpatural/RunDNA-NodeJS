@@ -8,9 +8,10 @@ const {
 } = require('../../lib/jwt');
 
 class AuthService {
-  constructor({ repository, env }) {
+  constructor({ repository, env, socialTokenVerifier }) {
     this.repository = repository;
     this.env = env;
+    this.socialTokenVerifier = socialTokenVerifier;
   }
 
   async register({ email, password }) {
@@ -86,6 +87,63 @@ class AuthService {
     return { success: true };
   }
 
+  async socialLogin({ provider, idToken, email }) {
+    const normalizedProvider = String(provider ?? '').trim().toLowerCase();
+    if (normalizedProvider !== 'google' && normalizedProvider !== 'apple') {
+      const error = new Error('Unsupported social provider');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (!idToken || typeof idToken !== 'string') {
+      const error = new Error('idToken is required');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    let verifiedProfile;
+    if (normalizedProvider === 'google') {
+      verifiedProfile = await this.socialTokenVerifier.verifyGoogleIdToken(idToken);
+    } else {
+      verifiedProfile = await this.socialTokenVerifier.verifyAppleIdToken(idToken);
+    }
+
+    let user = await this.repository.findUserByIdentity(
+      normalizedProvider,
+      verifiedProfile.providerUserId
+    );
+
+    const normalizedEmail = this.normalizeEmail(
+      verifiedProfile.email ?? email
+    );
+
+    if (!user && normalizedEmail) {
+      user = await this.repository.findUserByEmail(normalizedEmail);
+    }
+
+    if (!user) {
+      if (!normalizedEmail) {
+        const error = new Error('Social account email is required on first login');
+        error.statusCode = 400;
+        throw error;
+      }
+      user = await this.repository.createUser({
+        id: crypto.randomUUID(),
+        email: normalizedEmail,
+        passwordHash: hashPassword(crypto.randomUUID()),
+        createdAt: new Date().toISOString()
+      });
+    }
+
+    await this.repository.linkIdentity({
+      userId: user.id,
+      provider: normalizedProvider,
+      providerUserId: verifiedProfile.providerUserId,
+      email: normalizedEmail ?? user.email
+    });
+
+    return this.issueTokens(user);
+  }
+
   sanitizeUser(user) {
     return {
       id: user.id,
@@ -124,6 +182,14 @@ class AuthService {
       error.statusCode = 400;
       throw error;
     }
+  }
+
+  normalizeEmail(email) {
+    if (!email || typeof email !== 'string') {
+      return null;
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+    return normalizedEmail.includes('@') ? normalizedEmail : null;
   }
 }
 

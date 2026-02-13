@@ -12,6 +12,7 @@ async function resetDatabase(pool) {
     DROP TABLE IF EXISTS strava_webhook_events CASCADE;
     DROP TABLE IF EXISTS strava_activities CASCADE;
     DROP TABLE IF EXISTS strava_connections CASCADE;
+    DROP TABLE IF EXISTS user_identities CASCADE;
     DROP TABLE IF EXISTS provider_connections CASCADE;
     DROP TABLE IF EXISTS refresh_tokens CASCADE;
     DROP TABLE IF EXISTS users CASCADE;
@@ -34,6 +35,23 @@ async function ensureAuthSchema(pool) {
       refresh_token TEXT NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_identities (
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      provider_user_id TEXT NOT NULL,
+      email TEXT,
+      linked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, provider),
+      UNIQUE (provider, provider_user_id)
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_user_identities_email
+    ON user_identities (email);
   `);
 
   await pool.query(`

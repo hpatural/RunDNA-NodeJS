@@ -10,6 +10,10 @@ async function authRoutes(fastify) {
     return authService.login(request.body ?? {});
   });
 
+  fastify.post('/auth/social-login', async (request) => {
+    return authService.socialLogin(request.body ?? {});
+  });
+
   fastify.post('/auth/refresh', async (request) => {
     return authService.refresh(request.body ?? {});
   });
