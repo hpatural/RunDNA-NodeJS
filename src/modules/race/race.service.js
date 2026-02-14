@@ -34,6 +34,7 @@ class RaceService {
         totalCaloriesKcal,
         totalCarbTargetG,
         totalHydrationMl,
+        runnerType: athlete.runnerType,
       },
       pacing,
       hydration,
@@ -74,6 +75,29 @@ class RaceService {
     const weeklyElevationGainM = median(elevationByWeek);
     const baselinePaceMinPerKm = median(paceSeries);
     const level = resolveAthleteLevel({ weeklyDistanceKm, baselinePaceMinPerKm });
+    const shortPace = median(
+      valid
+        .filter((item) => Number(item.distanceM ?? 0) / 1000 <= 12)
+        .map((item) => Number(item.movingTimeSec) / 60 / (Number(item.distanceM) / 1000))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    ) || baselinePaceMinPerKm;
+    const longPace = median(
+      valid
+        .filter((item) => Number(item.distanceM ?? 0) / 1000 >= 22)
+        .map((item) => Number(item.movingTimeSec) / 60 / (Number(item.distanceM) / 1000))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    ) || baselinePaceMinPerKm * 1.07;
+    const enduranceDecayRatio = longPace > 0 && shortPace > 0 ? longPace / shortPace : 1.08;
+    const enduranceScore = computeEnduranceScore({
+      weeklyDistanceKm,
+      decayRatio: enduranceDecayRatio,
+      longRunCount: valid.filter((item) => Number(item.distanceM ?? 0) / 1000 >= 18).length
+    });
+    const speedScore = computeSpeedScore({
+      shortPace,
+      baselinePace: baselinePaceMinPerKm
+    });
+    const runnerType = resolveRunnerType({ enduranceScore, speedScore });
     const estimatedWeightKg = resolveAthleteWeightKg({
       explicitWeightKg: input?.weightKg,
       level,
@@ -86,6 +110,12 @@ class RaceService {
       baselinePaceMinPerKm: round2(baselinePaceMinPerKm),
       weeklyDistanceKm: round2(weeklyDistanceKm),
       weeklyElevationGainM: Math.round(weeklyElevationGainM),
+      shortPaceMinPerKm: round2(shortPace),
+      longPaceMinPerKm: round2(longPace),
+      enduranceScore,
+      speedScore,
+      enduranceDecayRatio: round3(enduranceDecayRatio),
+      runnerType,
       estimatedWeightKg: round1(estimatedWeightKg),
     };
   }
@@ -155,9 +185,12 @@ class RaceService {
         ? ((elevationStats.gainM - elevationStats.lossM) / (distanceKm * 1000)) * 100
         : 0;
       const terrain = resolveTerrain(gradePct);
+      const midKm = startKm + (distanceKm / 2);
+      const progressRatio = profile.distanceKm > 0 ? midKm / profile.distanceKm : 0;
       const targetPaceMinPerKm = targetPaceForSegment({
-        baselinePaceMinPerKm: athlete.baselinePaceMinPerKm,
-        level: athlete.level,
+        athlete,
+        raceDistanceKm: profile.distanceKm,
+        progressRatio,
         gradePct,
       });
       const estimatedDurationMin = targetPaceMinPerKm * distanceKm;
@@ -551,16 +584,53 @@ function resolveTerrain(gradePct) {
   return 'flat';
 }
 
-function targetPaceForSegment({ baselinePaceMinPerKm, level, gradePct }) {
+function targetPaceForSegment({ athlete, raceDistanceKm, progressRatio, gradePct }) {
+  const profile = athlete ?? {};
+  const distanceKm = Number(raceDistanceKm ?? 10);
+  const raceProgress = clamp01(Number(progressRatio ?? 0));
+  const basePace = Number(profile.baselinePaceMinPerKm ?? 6);
+  const level = profile.level ?? 'intermediate';
   const paceFactor = paceFactorFromGrade(gradePct);
   const levelFactor = level === 'advanced' ? 0.96 : level === 'intermediate' ? 1 : 1.05;
+  const enduranceScore = Number(profile.enduranceScore ?? 55);
+  const speedScore = Number(profile.speedScore ?? 55);
+  const decayRatio = Number(profile.enduranceDecayRatio ?? 1.08);
+
+  // Distance penalty: half marathon / marathon should not use 10k pace.
+  const distanceLog = Math.log1p(Math.max(0, distanceKm - 10)) / Math.log1p(32);
+  const distancePenaltyMax = 0.16 - ((enduranceScore - 50) / 1000);
+  const distanceFactor = 1 + (distancePenaltyMax * distanceLog);
+
+  // Cardiac drift / fatigue rises with distance and is reduced by endurance profile.
+  const driftBase = 0.01 + Math.max(0, (distanceKm - 18) / 240);
+  const driftFactor = 1 + (driftBase * raceProgress * (1.25 - enduranceScore / 100));
+
+  // Phase pacing curve: conservative start, controlled middle, late behavior by profile.
+  const startConservative = raceProgress < 0.12
+    ? 1 + (0.025 + (distanceKm > 25 ? 0.02 : 0.01))
+    : 1;
+  const lateRacePenalty = raceProgress > 0.72
+    ? 1 + ((raceProgress - 0.72) * (decayRatio - 1) * 1.25)
+    : 1;
+  const lateRaceBonus = raceProgress > 0.82 && speedScore > enduranceScore + 8
+    ? 1 - ((raceProgress - 0.82) * 0.035)
+    : 1;
+
   const terrain = resolveTerrain(gradePct);
   const terrainFactor = terrain === 'climb'
     ? (level === 'advanced' ? 1.14 : level === 'intermediate' ? 1.18 : 1.24)
     : terrain === 'downhill'
       ? (level === 'advanced' ? 0.9 : level === 'intermediate' ? 0.93 : 0.96)
       : 1;
-  return baselinePaceMinPerKm * paceFactor * levelFactor * terrainFactor;
+  return basePace
+    * paceFactor
+    * levelFactor
+    * terrainFactor
+    * distanceFactor
+    * driftFactor
+    * startConservative
+    * lateRacePenalty
+    * lateRaceBonus;
 }
 
 function buildTerrainPaces(athlete) {
@@ -574,6 +644,31 @@ function buildTerrainPaces(athlete) {
     flatPaceLabel: formatPace(flat),
     downhillPaceLabel: formatPace(downhill),
   };
+}
+
+function computeEnduranceScore({ weeklyDistanceKm, decayRatio, longRunCount }) {
+  const volumeScore = clamp((weeklyDistanceKm / 80) * 100, 0, 100);
+  const decayScore = clamp((1.22 - decayRatio) * 330, 0, 100);
+  const longRunScore = clamp(longRunCount * 6, 0, 100);
+  return Math.round((volumeScore * 0.5) + (decayScore * 0.35) + (longRunScore * 0.15));
+}
+
+function computeSpeedScore({ shortPace, baselinePace }) {
+  if (shortPace <= 0 || baselinePace <= 0) {
+    return 50;
+  }
+  const reserve = baselinePace / shortPace;
+  return Math.round(clamp((reserve - 1) * 180, 0, 100));
+}
+
+function resolveRunnerType({ enduranceScore, speedScore }) {
+  if (enduranceScore >= speedScore + 12) {
+    return 'endurance';
+  }
+  if (speedScore >= enduranceScore + 12) {
+    return 'speed';
+  }
+  return 'balanced';
 }
 
 function paceFactorFromGrade(gradePct) {
@@ -882,6 +977,10 @@ function sum(items, selector) {
 
 function round2(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function round3(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 1000) / 1000;
 }
 
 function round1(value) {
