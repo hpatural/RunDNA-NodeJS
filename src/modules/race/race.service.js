@@ -7,13 +7,17 @@ class RaceService {
 
   async buildPlan(userId, input = {}) {
     const locale = normalizeLocale(input.locale);
-    const athlete = await this.#buildAthleteBaseline(userId);
+    const athlete = await this.#buildAthleteBaseline(userId, input);
     const profile = this.#buildCourseProfile(input);
-    const segments = this.#buildSegments(profile, athlete, locale);
+    const baseSegments = this.#buildSegments(profile, athlete, locale);
+    const segments = this.#attachEnergyAndFuelTargets(baseSegments, athlete);
     const hydration = this.#buildHydrationPlan(segments, athlete, locale);
     const nutrition = this.#buildNutritionPlan(segments, athlete, locale);
     const pacing = this.#buildPacingGuidance(segments, athlete, locale);
     const aidStations = this.#buildAidStations(profile, segments, athlete, locale);
+    const totalCaloriesKcal = Math.round(sum(segments, (s) => Number(s.caloriesKcal ?? 0)));
+    const totalCarbTargetG = Math.round(sum(segments, (s) => Number(s.carbTargetG ?? 0)));
+    const totalHydrationMl = Math.round(sum(segments, (s) => Number(s.hydrationTargetMl ?? 0)));
 
     return {
       source: profile.source,
@@ -27,6 +31,9 @@ class RaceService {
             segments.map((s) => ({ value: s.targetPaceMinPerKm, weight: s.distanceKm }))
           )
         ),
+        totalCaloriesKcal,
+        totalCarbTargetG,
+        totalHydrationMl,
       },
       pacing,
       hydration,
@@ -37,7 +44,7 @@ class RaceService {
     };
   }
 
-  async #buildAthleteBaseline(userId) {
+  async #buildAthleteBaseline(userId, input) {
     const startDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
     const activities = await this.stravaRepository.getActivities(userId, {
       startDate,
@@ -67,12 +74,19 @@ class RaceService {
     const weeklyElevationGainM = median(elevationByWeek);
     const baselinePaceMinPerKm = median(paceSeries);
     const level = resolveAthleteLevel({ weeklyDistanceKm, baselinePaceMinPerKm });
+    const estimatedWeightKg = resolveAthleteWeightKg({
+      explicitWeightKg: input?.weightKg,
+      level,
+      weeklyDistanceKm,
+      baselinePaceMinPerKm
+    });
 
     return {
       level,
       baselinePaceMinPerKm: round2(baselinePaceMinPerKm),
       weeklyDistanceKm: round2(weeklyDistanceKm),
       weeklyElevationGainM: Math.round(weeklyElevationGainM),
+      estimatedWeightKg: round1(estimatedWeightKg),
     };
   }
 
@@ -167,64 +181,108 @@ class RaceService {
     return segments;
   }
 
-  #buildHydrationPlan(segments, athlete, locale) {
-    const baseMlPerHour = athlete.level === 'advanced' ? 650 : athlete.level === 'intermediate' ? 600 : 550;
-    const totalMl = Math.round(
-      sum(segments, (segment) => (segment.estimatedDurationMin / 60) * baseMlPerHour * effortFactor(segment.effort))
-    );
-    const perStopMl = 180;
-    const stops = [];
-    let nextStopAtMin = 20;
-    let elapsed = 0;
+  #attachEnergyAndFuelTargets(segments, athlete) {
+    const carbCapPerHour = athlete.level === 'advanced' ? 90 : athlete.level === 'intermediate' ? 75 : 60;
+    const enriched = [];
+    let minuteCursor = 0;
     for (const segment of segments) {
-      const segmentEnd = elapsed + segment.estimatedDurationMin;
-      while (nextStopAtMin <= segmentEnd) {
-        const ratio = segment.estimatedDurationMin > 0
-          ? Math.max(0, Math.min(1, (nextStopAtMin - elapsed) / segment.estimatedDurationMin))
-          : 0;
-        const atKm = segment.startKm + (segment.distanceKm * ratio);
-        stops.push({
-          atKm: round2(atKm),
-          action: `${perStopMl} ml`,
-        });
-        nextStopAtMin += 20;
-      }
-      elapsed = segmentEnd;
+      const durationMin = Math.max(1, Number(segment.estimatedDurationMin ?? 0));
+      const durationHr = durationMin / 60;
+      const met = metForSegment(segment);
+      const caloriesKcal = met * athlete.estimatedWeightKg * durationHr;
+      const carbOxidationRatio = 0.45 + ((Math.max(1, Math.min(10, segment.effort)) - 1) / 9) * 0.35;
+      const carbBurnG = (caloriesKcal * carbOxidationRatio) / 4;
+      const carbTargetG = Math.min(
+        carbBurnG * 0.82,
+        carbCapPerHour * durationHr
+      );
+      const climbDensity = segment.distanceKm > 0
+        ? Math.max(0, Number(segment.elevationGainM ?? 0) / segment.distanceKm)
+        : 0;
+      const hydrationRateMlPerHour = clamp(
+        420 + (segment.effort * 30) + (climbDensity * 0.9),
+        450,
+        980
+      );
+      const hydrationTargetMl = hydrationRateMlPerHour * durationHr;
+      const startMinute = minuteCursor;
+      const endMinute = minuteCursor + durationMin;
+      minuteCursor = endMinute;
+
+      enriched.push({
+        ...segment,
+        caloriesKcal: Math.round(caloriesKcal),
+        carbBurnG: round1(carbBurnG),
+        carbTargetG: round1(carbTargetG),
+        hydrationRateMlPerHour: Math.round(hydrationRateMlPerHour),
+        hydrationTargetMl: Math.round(hydrationTargetMl),
+        startMinute: round1(startMinute),
+        endMinute: round1(endMinute),
+      });
+    }
+    return enriched;
+  }
+
+  #buildHydrationPlan(segments, athlete, locale) {
+    const totalMl = Math.round(sum(segments, (segment) => Number(segment.hydrationTargetMl ?? 0)));
+    const totalHours = Math.max(0.01, sum(segments, (segment) => Number(segment.estimatedDurationMin ?? 0)) / 60);
+    const averageRate = totalMl / totalHours;
+    const minRate = Math.min(...segments.map((segment) => Number(segment.hydrationRateMlPerHour ?? averageRate)));
+    const maxRate = Math.max(...segments.map((segment) => Number(segment.hydrationRateMlPerHour ?? averageRate)));
+    const stops = [];
+    const intervalMin = athlete.level === 'advanced' ? 18 : athlete.level === 'intermediate' ? 20 : 22;
+    const totalDurationMin = sum(segments, (segment) => Number(segment.estimatedDurationMin ?? 0));
+    let nextStopAtMin = intervalMin;
+    let previousStopMin = 0;
+    while (nextStopAtMin <= totalDurationMin + 0.1) {
+      const atKm = kmAtMinute(segments, nextStopAtMin);
+      const hydrationMl = Math.round(amountBetweenMinutes(segments, previousStopMin, nextStopAtMin, 'hydrationRateMlPerHour') / 10) * 10;
+      const carbsG = Math.round(amountBetweenMinutes(segments, previousStopMin, nextStopAtMin, 'carbRateGPerHour'));
+      stops.push({
+        atKm: round2(atKm),
+        hydrationMl,
+        carbsG,
+        action: `${hydrationMl} ml`,
+      });
+      previousStopMin = nextStopAtMin;
+      nextStopAtMin += intervalMin;
     }
 
     return {
       totalMl,
-      guideline: formatHydrationGuideline(locale, Math.round(baseMlPerHour)),
+      guideline: formatHydrationGuideline(locale, Math.round(averageRate), Math.round(minRate), Math.round(maxRate)),
       stops,
     };
   }
 
   #buildNutritionPlan(segments, athlete, locale) {
-    const carbsPerHour = athlete.level === 'advanced' ? 80 : athlete.level === 'intermediate' ? 65 : 50;
-    const totalHours = sum(segments, (segment) => segment.estimatedDurationMin) / 60;
-    const totalCarbsG = Math.round(totalHours * carbsPerHour);
+    const totalCarbsG = Math.round(sum(segments, (segment) => Number(segment.carbTargetG ?? 0)));
+    const totalHours = Math.max(0.01, sum(segments, (segment) => Number(segment.estimatedDurationMin ?? 0)) / 60);
+    const avgCarbsPerHour = totalCarbsG / totalHours;
+    const carbCapPerHour = athlete.level === 'advanced' ? 90 : athlete.level === 'intermediate' ? 75 : 60;
     const feeds = [];
-    let elapsed = 0;
-    let nextFeedAtMin = 30;
-    for (const segment of segments) {
-      const segmentEnd = elapsed + segment.estimatedDurationMin;
-      while (nextFeedAtMin <= segmentEnd) {
-        const ratio = segment.estimatedDurationMin > 0
-          ? Math.max(0, Math.min(1, (nextFeedAtMin - elapsed) / segment.estimatedDurationMin))
-          : 0;
-        const atKm = segment.startKm + (segment.distanceKm * ratio);
-        feeds.push({
-          atKm: round2(atKm),
-          carbsG: athlete.level === 'advanced' ? 30 : 25,
-          type: 'gel/drink mix',
-        });
-        nextFeedAtMin += 30;
-      }
-      elapsed = segmentEnd;
+    const intervalMin = athlete.level === 'advanced' ? 24 : athlete.level === 'intermediate' ? 26 : 30;
+    const totalDurationMin = sum(segments, (segment) => Number(segment.estimatedDurationMin ?? 0));
+    let nextFeedAtMin = intervalMin;
+    let previousFeedMin = 0;
+    while (nextFeedAtMin <= totalDurationMin + 0.1) {
+      const atKm = kmAtMinute(segments, nextFeedAtMin);
+      const carbsG = Math.max(
+        athlete.level === 'advanced' ? 20 : 16,
+        Math.round(amountBetweenMinutes(segments, previousFeedMin, nextFeedAtMin, 'carbRateGPerHour'))
+      );
+      feeds.push({
+        atKm: round2(atKm),
+        carbsG,
+        type: locale === 'fr' ? 'gel/boisson glucidique' : 'gel/drink mix',
+      });
+      previousFeedMin = nextFeedAtMin;
+      nextFeedAtMin += intervalMin;
     }
+
     return {
       totalCarbsG,
-      guideline: formatNutritionGuideline(locale, carbsPerHour),
+      guideline: formatNutritionGuideline(locale, round1(avgCarbsPerHour), carbCapPerHour),
       feeds,
     };
   }
@@ -306,14 +364,19 @@ class RaceService {
       1.4
     ).slice(0, 14);
 
-    const ml = athlete.level === 'advanced' ? 220 : athlete.level === 'intermediate' ? 200 : 180;
-    const carbs = athlete.level === 'advanced' ? 30 : 25;
-    return deduped.map((item) => ({
-      atKm: item.atKm,
-      reason: item.reason,
-      hydrationMl: ml,
-      carbsG: carbs,
-    }));
+    let previousMinute = 0;
+    return deduped.map((item) => {
+      const currentMinute = minuteAtKm(segments, item.atKm);
+      const hydrationMl = Math.round(amountBetweenMinutes(segments, previousMinute, currentMinute, 'hydrationRateMlPerHour') / 10) * 10;
+      const carbsG = Math.round(amountBetweenMinutes(segments, previousMinute, currentMinute, 'carbRateGPerHour'));
+      previousMinute = currentMinute;
+      return {
+        atKm: item.atKm,
+        reason: item.reason,
+        hydrationMl: Math.max(120, hydrationMl),
+        carbsG: Math.max(15, carbsG),
+      };
+    });
   }
 }
 
@@ -348,15 +411,18 @@ function t(locale, key) {
 }
 
 function formatHydrationGuideline(locale, mlPerHour) {
+  const avg = arguments[1];
+  const min = arguments[2] ?? avg;
+  const max = arguments[3] ?? avg;
   return locale === 'fr'
-    ? `${mlPerHour} ml/h ajuste selon l'effort`
-    : `${mlPerHour} ml/h adjusted by effort`;
+    ? `${avg} ml/h moyenne (${min}-${max})`
+    : `${avg} ml/h average (${min}-${max})`;
 }
 
-function formatNutritionGuideline(locale, carbsPerHour) {
+function formatNutritionGuideline(locale, carbsPerHour, capPerHour) {
   return locale === 'fr'
-    ? `${carbsPerHour} g glucides/h`
-    : `${carbsPerHour} g carbs/h`;
+    ? `${carbsPerHour} g glucides/h (cap ${capPerHour} g/h)`
+    : `${carbsPerHour} g carbs/h (cap ${capPerHour} g/h)`;
 }
 
 function parseGpxTrackPoints(gpx) {
@@ -553,6 +619,14 @@ function effortFactor(effort) {
   return 0.9 + ((Math.max(1, Math.min(10, effort)) - 1) / 9) * 0.3;
 }
 
+function metForSegment(segment) {
+  const terrain = segment.terrain;
+  const effort = Math.max(1, Math.min(10, Number(segment.effort ?? 5)));
+  const terrainBase = terrain === 'climb' ? 10.8 : terrain === 'downhill' ? 8.2 : 9.5;
+  const effortAdj = 0.35 * (effort - 5);
+  return clamp(terrainBase + effortAdj, 6.5, 16.0);
+}
+
 function median(list) {
   if (!Array.isArray(list) || list.length === 0) {
     return 0;
@@ -602,6 +676,71 @@ function dedupeStations(stations, minGapKm) {
     }
   }
   return out;
+}
+
+function resolveAthleteWeightKg({ explicitWeightKg, level, weeklyDistanceKm, baselinePaceMinPerKm }) {
+  const explicit = Number(explicitWeightKg);
+  if (Number.isFinite(explicit) && explicit >= 40 && explicit <= 130) {
+    return explicit;
+  }
+  const base = level === 'advanced' ? 68 : level === 'intermediate' ? 72 : 76;
+  const volumeAdj = clamp((Number(weeklyDistanceKm ?? 0) - 35) * -0.07, -4, 4);
+  const paceAdj = clamp((Number(baselinePaceMinPerKm ?? 6) - 5.5) * 1.6, -3.5, 3.5);
+  return clamp(base + volumeAdj + paceAdj, 52, 92);
+}
+
+function minuteAtKm(segments, targetKm) {
+  let fallback = 0;
+  for (const segment of segments) {
+    const startKm = Number(segment.startKm ?? 0);
+    const endKm = Number(segment.endKm ?? startKm);
+    const startMinute = Number(segment.startMinute ?? fallback);
+    const endMinute = Number(segment.endMinute ?? startMinute);
+    fallback = endMinute;
+    if (targetKm >= startKm && targetKm <= endKm && endKm > startKm) {
+      const ratio = (targetKm - startKm) / (endKm - startKm);
+      return startMinute + (endMinute - startMinute) * ratio;
+    }
+  }
+  return fallback;
+}
+
+function kmAtMinute(segments, targetMinute) {
+  let fallback = 0;
+  for (const segment of segments) {
+    const startMinute = Number(segment.startMinute ?? 0);
+    const endMinute = Number(segment.endMinute ?? startMinute);
+    const startKm = Number(segment.startKm ?? fallback);
+    const endKm = Number(segment.endKm ?? startKm);
+    fallback = endKm;
+    if (targetMinute >= startMinute && targetMinute <= endMinute && endMinute > startMinute) {
+      const ratio = (targetMinute - startMinute) / (endMinute - startMinute);
+      return startKm + (endKm - startKm) * ratio;
+    }
+  }
+  return fallback;
+}
+
+function amountBetweenMinutes(segments, startMinute, endMinute, rateField) {
+  if (endMinute <= startMinute) {
+    return 0;
+  }
+  let total = 0;
+  for (const segment of segments) {
+    const segStart = Number(segment.startMinute ?? 0);
+    const segEnd = Number(segment.endMinute ?? segStart);
+    const overlapStart = Math.max(startMinute, segStart);
+    const overlapEnd = Math.min(endMinute, segEnd);
+    const overlapMin = Math.max(0, overlapEnd - overlapStart);
+    if (overlapMin <= 0) {
+      continue;
+    }
+    const ratePerHour = rateField === 'carbRateGPerHour'
+      ? (Number(segment.carbTargetG ?? 0) / Math.max(0.0001, Number(segment.estimatedDurationMin ?? 1) / 60))
+      : Number(segment.hydrationRateMlPerHour ?? 0);
+    total += ratePerHour * (overlapMin / 60);
+  }
+  return total;
 }
 
 function buildAdaptiveSegmentBounds(profile) {
@@ -708,6 +847,13 @@ function clamp01(value) {
   return Math.max(0, Math.min(1, value));
 }
 
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.max(min, Math.min(max, value));
+}
+
 function haversineMeters(lat1, lon1, lat2, lon2) {
   const r = 6371000;
   const dLat = toRadians(lat2 - lat1);
@@ -736,6 +882,10 @@ function sum(items, selector) {
 
 function round2(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function round1(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 10) / 10;
 }
 
 function round4(value) {
