@@ -35,6 +35,12 @@ class RaceService {
         totalCarbTargetG,
         totalHydrationMl,
         runnerType: athlete.runnerType,
+        distancePenaltyPct: round2(
+          estimateDistancePenaltyPct({
+            raceDistanceKm: profile.distanceKm,
+            enduranceScore: athlete.enduranceScore
+          })
+        ),
       },
       pacing,
       hydration,
@@ -598,8 +604,11 @@ function targetPaceForSegment({ athlete, raceDistanceKm, progressRatio, gradePct
 
   // Distance penalty: half marathon / marathon should not use 10k pace.
   const distanceLog = Math.log1p(Math.max(0, distanceKm - 10)) / Math.log1p(32);
-  const distancePenaltyMax = 0.16 - ((enduranceScore - 50) / 1000);
-  const distanceFactor = 1 + (distancePenaltyMax * distanceLog);
+  const distancePenaltyPct = estimateDistancePenaltyPct({
+    raceDistanceKm: distanceKm,
+    enduranceScore
+  });
+  const distanceFactor = 1 + (distancePenaltyPct / 100);
 
   // Cardiac drift / fatigue rises with distance and is reduced by endurance profile.
   const driftBase = 0.01 + Math.max(0, (distanceKm - 18) / 240);
@@ -631,6 +640,14 @@ function targetPaceForSegment({ athlete, raceDistanceKm, progressRatio, gradePct
     * startConservative
     * lateRacePenalty
     * lateRaceBonus;
+}
+
+function estimateDistancePenaltyPct({ raceDistanceKm, enduranceScore }) {
+  const distanceKm = Number(raceDistanceKm ?? 10);
+  const score = Number(enduranceScore ?? 55);
+  const distanceLog = Math.log1p(Math.max(0, distanceKm - 10)) / Math.log1p(32);
+  const distancePenaltyMax = 0.16 - ((score - 50) / 1000);
+  return distancePenaltyMax * distanceLog * 100;
 }
 
 function buildTerrainPaces(athlete) {
