@@ -122,19 +122,24 @@ class RaceService {
   }
 
   #buildSegments(profile, athlete, locale) {
-    const segmentKm = profile.distanceKm <= 20 ? 2 : profile.distanceKm <= 45 ? 3 : 5;
-    const segmentCount = Math.max(1, Math.ceil(profile.distanceKm / segmentKm));
-    const defaultGainPerKm = profile.distanceKm > 0 ? profile.elevationGainM / profile.distanceKm : 0;
-
+    const bounds = buildAdaptiveSegmentBounds(profile);
+    const synthetic = profile.points.length > 1
+      ? null
+      : buildSyntheticElevationAllocations(bounds, profile.elevationGainM);
     const segments = [];
-    for (let index = 0; index < segmentCount; index += 1) {
-      const startKm = index * segmentKm;
-      const endKm = Math.min(profile.distanceKm, (index + 1) * segmentKm);
+    const segmentCount = bounds.length;
+    for (let index = 0; index < bounds.length; index += 1) {
+      const { startKm, endKm } = bounds[index];
       const distanceKm = Math.max(0, endKm - startKm);
-      const gainM = profile.points.length > 1
-        ? gainOnInterval(profile.points, startKm, endKm)
-        : distanceKm * defaultGainPerKm;
-      const gradePct = distanceKm > 0 ? (gainM / (distanceKm * 1000)) * 100 : 0;
+      const elevationStats = profile.points.length > 1
+        ? elevationStatsOnInterval(profile.points, startKm, endKm)
+        : {
+            gainM: synthetic?.gainByIndex[index] ?? 0,
+            lossM: synthetic?.lossByIndex[index] ?? 0
+          };
+      const gradePct = distanceKm > 0
+        ? ((elevationStats.gainM - elevationStats.lossM) / (distanceKm * 1000)) * 100
+        : 0;
       const terrain = resolveTerrain(gradePct);
       const targetPaceMinPerKm = targetPaceForSegment({
         baselinePaceMinPerKm: athlete.baselinePaceMinPerKm,
@@ -148,7 +153,8 @@ class RaceService {
         startKm: round2(startKm),
         endKm: round2(endKm),
         distanceKm: round2(distanceKm),
-        elevationGainM: Math.round(gainM),
+        elevationGainM: Math.round(elevationStats.gainM),
+        elevationLossM: Math.round(elevationStats.lossM),
         avgGradePct: round2(gradePct),
         targetPaceMinPerKm: round2(targetPaceMinPerKm),
         targetPaceLabel: formatPace(targetPaceMinPerKm),
@@ -395,23 +401,37 @@ function computeProfileFromPoints(points) {
 }
 
 function gainOnInterval(points, startKm, endKm) {
-  if (points.length < 2) {
-    return 0;
+  return elevationStatsOnInterval(points, startKm, endKm).gainM;
+}
+
+function elevationStatsOnInterval(points, startKm, endKm) {
+  if (points.length < 2 || endKm <= startKm) {
+    return { gainM: 0, lossM: 0 };
   }
   let gain = 0;
+  let loss = 0;
   for (let index = 1; index < points.length; index += 1) {
     const prev = points[index - 1];
     const curr = points[index];
     const prevKm = Number(prev.cumulativeKm ?? 0);
     const currKm = Number(curr.cumulativeKm ?? 0);
-    if (currKm < startKm || prevKm > endKm) {
+    const edgeKm = Math.max(0.00001, currKm - prevKm);
+    const overlapStart = Math.max(startKm, prevKm);
+    const overlapEnd = Math.min(endKm, currKm);
+    const overlapKm = Math.max(0, overlapEnd - overlapStart);
+    if (overlapKm <= 0) {
       continue;
     }
-    if (Number.isFinite(prev.ele) && Number.isFinite(curr.ele) && curr.ele > prev.ele) {
-      gain += curr.ele - prev.ele;
+    if (Number.isFinite(prev.ele) && Number.isFinite(curr.ele)) {
+      const delta = (curr.ele - prev.ele) * (overlapKm / edgeKm);
+      if (delta > 0) {
+        gain += delta;
+      } else {
+        loss += Math.abs(delta);
+      }
     }
   }
-  return gain;
+  return { gainM: gain, lossM: loss };
 }
 
 function groupDistanceByIsoWeek(activities) {
@@ -582,6 +602,110 @@ function dedupeStations(stations, minGapKm) {
     }
   }
   return out;
+}
+
+function buildAdaptiveSegmentBounds(profile) {
+  if (profile.points.length > 1) {
+    return buildBoundsFromGpx(profile.points, profile.distanceKm);
+  }
+  return buildBoundsFromDistance(profile.distanceKm, profile.elevationGainM);
+}
+
+function buildBoundsFromGpx(points, totalDistanceKm) {
+  const bounds = [];
+  const minLenKm = 0.9;
+  const maxLenKm = totalDistanceKm <= 20 ? 2.1 : totalDistanceKm <= 45 ? 2.8 : 3.6;
+  const probeKm = 0.7;
+  const stepKm = 0.35;
+  let startKm = 0;
+
+  while (startKm < totalDistanceKm - 0.05) {
+    const seedStats = elevationStatsOnInterval(
+      points,
+      startKm,
+      Math.min(totalDistanceKm, startKm + probeKm)
+    );
+    const seedDistance = Math.max(0.2, Math.min(totalDistanceKm - startKm, probeKm));
+    const seedGrade = ((seedStats.gainM - seedStats.lossM) / (seedDistance * 1000)) * 100;
+    const baseTerrain = resolveTerrain(seedGrade);
+    let endKm = Math.min(totalDistanceKm, startKm + minLenKm);
+
+    while (endKm < totalDistanceKm) {
+      const nextEnd = Math.min(totalDistanceKm, endKm + stepKm);
+      const winStats = elevationStatsOnInterval(points, endKm, Math.min(totalDistanceKm, endKm + probeKm));
+      const winDistance = Math.max(0.2, Math.min(totalDistanceKm - endKm, probeKm));
+      const winGrade = ((winStats.gainM - winStats.lossM) / (winDistance * 1000)) * 100;
+      const winTerrain = resolveTerrain(winGrade);
+      const currentLen = endKm - startKm;
+      if (currentLen >= minLenKm && winTerrain !== baseTerrain) {
+        break;
+      }
+      if (currentLen >= maxLenKm) {
+        break;
+      }
+      endKm = nextEnd;
+    }
+
+    bounds.push({ startKm: round2(startKm), endKm: round2(endKm) });
+    startKm = endKm;
+  }
+
+  return normalizeBounds(bounds, totalDistanceKm);
+}
+
+function buildBoundsFromDistance(totalDistanceKm, elevationGainM) {
+  const avgLenKm = totalDistanceKm <= 20 ? 1.8 : totalDistanceKm <= 45 ? 2.5 : 3.2;
+  const dplusPerKm = totalDistanceKm > 0 ? elevationGainM / totalDistanceKm : 0;
+  const ruggedness = clamp01(dplusPerKm / 55);
+  const wave = [0.78, 1.22, 0.92, 1.35, 0.86, 1.12];
+  const bounds = [];
+  let cursor = 0;
+  let idx = 0;
+
+  while (cursor < totalDistanceKm - 0.05) {
+    const amp = 1 + ruggedness * 0.35;
+    const len = avgLenKm * wave[idx % wave.length] * amp;
+    const next = Math.min(totalDistanceKm, cursor + len);
+    bounds.push({ startKm: round2(cursor), endKm: round2(next) });
+    cursor = next;
+    idx += 1;
+  }
+
+  return normalizeBounds(bounds, totalDistanceKm);
+}
+
+function normalizeBounds(bounds, totalDistanceKm) {
+  if (bounds.length === 0) {
+    return [{ startKm: 0, endKm: round2(totalDistanceKm) }];
+  }
+  const out = [];
+  let cursor = 0;
+  for (const item of bounds) {
+    const startKm = round2(Math.max(cursor, Number(item.startKm ?? cursor)));
+    const endKm = round2(Math.max(startKm + 0.05, Number(item.endKm ?? startKm + 0.05)));
+    out.push({ startKm, endKm: Math.min(endKm, round2(totalDistanceKm)) });
+    cursor = out[out.length - 1].endKm;
+  }
+  out[out.length - 1].endKm = round2(totalDistanceKm);
+  return out.filter((item) => item.endKm > item.startKm);
+}
+
+function buildSyntheticElevationAllocations(bounds, totalGainM) {
+  const gainWeights = bounds.map((_, index) => Math.max(0.2, 0.9 + Math.sin((index + 1) * 1.15)));
+  const lossWeights = bounds.map((_, index) => Math.max(0.2, 0.9 + Math.sin((index + 1) * 0.95 + 1.8)));
+  const gainWeightSum = sum(gainWeights, (value) => value);
+  const lossWeightSum = sum(lossWeights, (value) => value);
+  const totalLossM = totalGainM * 0.86;
+  const gainByIndex = gainWeights.map((weight) => (weight / gainWeightSum) * totalGainM);
+  const lossByIndex = lossWeights.map((weight) => (weight / lossWeightSum) * totalLossM);
+  return { gainByIndex, lossByIndex };
+}
+
+function clamp01(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, value));
 }
 
 function haversineMeters(lat1, lon1, lat2, lon2) {
