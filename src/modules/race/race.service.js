@@ -1,0 +1,446 @@
+const SUPPORTED_STRAVA_SPORTS = ['Run', 'TrailRun'];
+
+class RaceService {
+  constructor({ stravaRepository }) {
+    this.stravaRepository = stravaRepository;
+  }
+
+  async buildPlan(userId, input = {}) {
+    const athlete = await this.#buildAthleteBaseline(userId);
+    const profile = this.#buildCourseProfile(input);
+    const segments = this.#buildSegments(profile, athlete);
+    const hydration = this.#buildHydrationPlan(segments, athlete);
+    const nutrition = this.#buildNutritionPlan(segments, athlete);
+    const pacing = this.#buildPacingGuidance(segments, athlete);
+
+    return {
+      source: profile.source,
+      athlete,
+      summary: {
+        distanceKm: round2(profile.distanceKm),
+        elevationGainM: Math.round(profile.elevationGainM),
+        estimatedDurationMin: Math.round(sum(segments, (s) => s.estimatedDurationMin)),
+        averageTargetPaceMinPerKm: round2(
+          weightedAverage(
+            segments.map((s) => ({ value: s.targetPaceMinPerKm, weight: s.distanceKm }))
+          )
+        ),
+      },
+      pacing,
+      hydration,
+      nutrition,
+      segments,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  async #buildAthleteBaseline(userId) {
+    const startDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
+    const activities = await this.stravaRepository.getActivities(userId, {
+      startDate,
+      limit: 3000,
+      sportTypes: SUPPORTED_STRAVA_SPORTS,
+    });
+
+    const valid = activities.filter(
+      (item) => Number(item.distanceM ?? 0) > 0 && Number(item.movingTimeSec ?? 0) > 0
+    );
+
+    if (valid.length === 0) {
+      return {
+        level: 'beginner',
+        baselinePaceMinPerKm: 6.5,
+        weeklyDistanceKm: 20,
+        weeklyElevationGainM: 250,
+      };
+    }
+
+    const paceSeries = valid
+      .map((item) => Number(item.movingTimeSec) / 60 / (Number(item.distanceM) / 1000))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const distanceByWeek = groupDistanceByIsoWeek(valid);
+    const elevationByWeek = groupElevationByIsoWeek(valid);
+    const weeklyDistanceKm = median(distanceByWeek);
+    const weeklyElevationGainM = median(elevationByWeek);
+    const baselinePaceMinPerKm = median(paceSeries);
+    const level = resolveAthleteLevel({ weeklyDistanceKm, baselinePaceMinPerKm });
+
+    return {
+      level,
+      baselinePaceMinPerKm: round2(baselinePaceMinPerKm),
+      weeklyDistanceKm: round2(weeklyDistanceKm),
+      weeklyElevationGainM: Math.round(weeklyElevationGainM),
+    };
+  }
+
+  #buildCourseProfile(input) {
+    const mode = String(input.mode ?? '').toLowerCase();
+    if (mode !== 'gpx' && mode !== 'distance') {
+      const error = new Error('mode must be "gpx" or "distance"');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (mode === 'distance') {
+      const distanceKm = Number(input.distanceKm);
+      const elevationGainM = Number(input.elevationGainM ?? 0);
+      if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
+        const error = new Error('distanceKm must be > 0');
+        error.statusCode = 400;
+        throw error;
+      }
+      return {
+        source: 'distance',
+        distanceKm,
+        elevationGainM: Math.max(0, elevationGainM),
+        points: [],
+      };
+    }
+
+    const gpx = String(input.gpx ?? '');
+    if (!gpx.trim()) {
+      const error = new Error('gpx payload is required when mode="gpx"');
+      error.statusCode = 400;
+      throw error;
+    }
+    const points = parseGpxTrackPoints(gpx);
+    if (points.length < 2) {
+      const error = new Error('Invalid GPX: no usable track points');
+      error.statusCode = 400;
+      throw error;
+    }
+    const profile = computeProfileFromPoints(points);
+    return {
+      source: 'gpx',
+      distanceKm: profile.distanceKm,
+      elevationGainM: profile.elevationGainM,
+      points,
+    };
+  }
+
+  #buildSegments(profile, athlete) {
+    const segmentKm = profile.distanceKm <= 20 ? 2 : profile.distanceKm <= 45 ? 3 : 5;
+    const segmentCount = Math.max(1, Math.ceil(profile.distanceKm / segmentKm));
+    const defaultGainPerKm = profile.distanceKm > 0 ? profile.elevationGainM / profile.distanceKm : 0;
+
+    const segments = [];
+    for (let index = 0; index < segmentCount; index += 1) {
+      const startKm = index * segmentKm;
+      const endKm = Math.min(profile.distanceKm, (index + 1) * segmentKm);
+      const distanceKm = Math.max(0, endKm - startKm);
+      const gainM = profile.points.length > 1
+        ? gainOnInterval(profile.points, startKm, endKm)
+        : distanceKm * defaultGainPerKm;
+      const gradePct = distanceKm > 0 ? (gainM / (distanceKm * 1000)) * 100 : 0;
+      const paceFactor = paceFactorFromGrade(gradePct);
+      const levelFactor = athlete.level === 'advanced' ? 0.96 : athlete.level === 'intermediate' ? 1 : 1.05;
+      const targetPaceMinPerKm = athlete.baselinePaceMinPerKm * paceFactor * levelFactor;
+      const estimatedDurationMin = targetPaceMinPerKm * distanceKm;
+      const effort = resolveEffort(gradePct, athlete.level);
+      segments.push({
+        index: index + 1,
+        startKm: round2(startKm),
+        endKm: round2(endKm),
+        distanceKm: round2(distanceKm),
+        elevationGainM: Math.round(gainM),
+        avgGradePct: round2(gradePct),
+        targetPaceMinPerKm: round2(targetPaceMinPerKm),
+        targetPaceLabel: formatPace(targetPaceMinPerKm),
+        estimatedDurationMin: Math.round(estimatedDurationMin),
+        effort,
+        strategy: strategyForSegment({ index, segmentCount, gradePct }),
+      });
+    }
+    return segments;
+  }
+
+  #buildHydrationPlan(segments, athlete) {
+    const baseMlPerHour = athlete.level === 'advanced' ? 650 : athlete.level === 'intermediate' ? 600 : 550;
+    const totalMl = Math.round(
+      sum(segments, (segment) => (segment.estimatedDurationMin / 60) * baseMlPerHour * effortFactor(segment.effort))
+    );
+    const perStopMl = 180;
+    const stops = [];
+    let nextStopAtMin = 20;
+    let elapsed = 0;
+    for (const segment of segments) {
+      const segmentEnd = elapsed + segment.estimatedDurationMin;
+      while (nextStopAtMin <= segmentEnd) {
+        const ratio = segment.estimatedDurationMin > 0
+          ? Math.max(0, Math.min(1, (nextStopAtMin - elapsed) / segment.estimatedDurationMin))
+          : 0;
+        const atKm = segment.startKm + (segment.distanceKm * ratio);
+        stops.push({
+          atKm: round2(atKm),
+          action: `${perStopMl} ml`,
+        });
+        nextStopAtMin += 20;
+      }
+      elapsed = segmentEnd;
+    }
+
+    return {
+      totalMl,
+      guideline: `${Math.round(baseMlPerHour)} ml/h adjusted by effort`,
+      stops,
+    };
+  }
+
+  #buildNutritionPlan(segments, athlete) {
+    const carbsPerHour = athlete.level === 'advanced' ? 80 : athlete.level === 'intermediate' ? 65 : 50;
+    const totalHours = sum(segments, (segment) => segment.estimatedDurationMin) / 60;
+    const totalCarbsG = Math.round(totalHours * carbsPerHour);
+    const feeds = [];
+    let elapsed = 0;
+    let nextFeedAtMin = 30;
+    for (const segment of segments) {
+      const segmentEnd = elapsed + segment.estimatedDurationMin;
+      while (nextFeedAtMin <= segmentEnd) {
+        const ratio = segment.estimatedDurationMin > 0
+          ? Math.max(0, Math.min(1, (nextFeedAtMin - elapsed) / segment.estimatedDurationMin))
+          : 0;
+        const atKm = segment.startKm + (segment.distanceKm * ratio);
+        feeds.push({
+          atKm: round2(atKm),
+          carbsG: athlete.level === 'advanced' ? 30 : 25,
+          type: 'gel/drink mix',
+        });
+        nextFeedAtMin += 30;
+      }
+      elapsed = segmentEnd;
+    }
+    return {
+      totalCarbsG,
+      guideline: `${carbsPerHour} g carbs/h`,
+      feeds,
+    };
+  }
+
+  #buildPacingGuidance(segments, athlete) {
+    const distanceKm = sum(segments, (segment) => segment.distanceKm);
+    const conservativeUntilKm = round2(distanceKm * 0.15);
+    const pushFromKm = round2(distanceKm * (athlete.level === 'advanced' ? 0.72 : 0.82));
+    const keySlowZones = segments
+      .filter((segment) => segment.avgGradePct >= 4.5)
+      .slice(0, 4)
+      .map((segment) => ({
+        startKm: segment.startKm,
+        endKm: segment.endKm,
+        reason: 'Steep climb: protect heart rate and shorten stride.',
+      }));
+    const keyPushZones = segments
+      .filter((segment) => segment.avgGradePct <= 1.2 && segment.endKm >= pushFromKm)
+      .slice(0, 4)
+      .map((segment) => ({
+        startKm: segment.startKm,
+        endKm: segment.endKm,
+        reason: 'Runnable section: progressive acceleration possible.',
+      }));
+
+    return {
+      conservativeUntilKm,
+      pushFromKm,
+      keySlowZones,
+      keyPushZones,
+      notes: [
+        'Start controlled for the first 15% to preserve glycogen.',
+        'Keep fueling before you feel empty.',
+        'Use climbs to manage effort, not to chase pace.',
+      ],
+    };
+  }
+}
+
+function parseGpxTrackPoints(gpx) {
+  const points = [];
+  const regex = /<trkpt[^>]*lat="([^"]+)"[^>]*lon="([^"]+)"[^>]*>([\s\S]*?)<\/trkpt>/gi;
+  let match;
+  while ((match = regex.exec(gpx)) !== null) {
+    const lat = Number(match[1]);
+    const lon = Number(match[2]);
+    const body = match[3] ?? '';
+    const eleMatch = body.match(/<ele>([^<]+)<\/ele>/i);
+    const ele = eleMatch ? Number(eleMatch[1]) : null;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      continue;
+    }
+    points.push({ lat, lon, ele: Number.isFinite(ele) ? ele : null });
+  }
+  return points;
+}
+
+function computeProfileFromPoints(points) {
+  let distanceM = 0;
+  let elevationGainM = 0;
+  let cumulativeKm = 0;
+  const enriched = [{ ...points[0], cumulativeKm: 0 }];
+  for (let index = 1; index < points.length; index += 1) {
+    const prev = points[index - 1];
+    const next = points[index];
+    const delta = haversineMeters(prev.lat, prev.lon, next.lat, next.lon);
+    distanceM += delta;
+    cumulativeKm += delta / 1000;
+    if (Number.isFinite(prev.ele) && Number.isFinite(next.ele) && next.ele > prev.ele) {
+      elevationGainM += next.ele - prev.ele;
+    }
+    enriched.push({ ...next, cumulativeKm: round4(cumulativeKm) });
+  }
+  return {
+    distanceKm: distanceM / 1000,
+    elevationGainM,
+    points: enriched,
+  };
+}
+
+function gainOnInterval(points, startKm, endKm) {
+  if (points.length < 2) {
+    return 0;
+  }
+  let gain = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const prev = points[index - 1];
+    const curr = points[index];
+    const prevKm = Number(prev.cumulativeKm ?? 0);
+    const currKm = Number(curr.cumulativeKm ?? 0);
+    if (currKm < startKm || prevKm > endKm) {
+      continue;
+    }
+    if (Number.isFinite(prev.ele) && Number.isFinite(curr.ele) && curr.ele > prev.ele) {
+      gain += curr.ele - prev.ele;
+    }
+  }
+  return gain;
+}
+
+function groupDistanceByIsoWeek(activities) {
+  const buckets = new Map();
+  for (const item of activities) {
+    const date = new Date(item.startDate);
+    const key = isoWeekKey(date);
+    const distanceKm = Number(item.distanceM ?? 0) / 1000;
+    buckets.set(key, (buckets.get(key) ?? 0) + distanceKm);
+  }
+  return Array.from(buckets.values()).filter((value) => value > 0);
+}
+
+function groupElevationByIsoWeek(activities) {
+  const buckets = new Map();
+  for (const item of activities) {
+    const date = new Date(item.startDate);
+    const key = isoWeekKey(date);
+    const gain = Number(item.totalElevationGainM ?? 0);
+    buckets.set(key, (buckets.get(key) ?? 0) + gain);
+  }
+  return Array.from(buckets.values()).filter((value) => value >= 0);
+}
+
+function isoWeekKey(date) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-${String(weekNo).padStart(2, '0')}`;
+}
+
+function resolveAthleteLevel({ weeklyDistanceKm, baselinePaceMinPerKm }) {
+  if (weeklyDistanceKm >= 60 || baselinePaceMinPerKm <= 4.9) {
+    return 'advanced';
+  }
+  if (weeklyDistanceKm >= 30 || baselinePaceMinPerKm <= 5.8) {
+    return 'intermediate';
+  }
+  return 'beginner';
+}
+
+function paceFactorFromGrade(gradePct) {
+  if (gradePct >= 8) return 1.45;
+  if (gradePct >= 6) return 1.32;
+  if (gradePct >= 4) return 1.22;
+  if (gradePct >= 2) return 1.12;
+  if (gradePct <= -6) return 0.86;
+  if (gradePct <= -3) return 0.92;
+  if (gradePct <= -1) return 0.96;
+  return 1.0;
+}
+
+function resolveEffort(gradePct, level) {
+  const base = gradePct >= 6 ? 8 : gradePct >= 3 ? 7 : gradePct <= -3 ? 5 : 6;
+  const levelAdj = level === 'advanced' ? 0 : level === 'intermediate' ? 0.4 : 0.8;
+  const value = Math.max(1, Math.min(10, Math.round(base + levelAdj)));
+  return value;
+}
+
+function strategyForSegment({ index, segmentCount, gradePct }) {
+  if (index <= Math.max(1, Math.floor(segmentCount * 0.15))) {
+    return 'Controlled start, keep breathing easy.';
+  }
+  if (gradePct >= 5) {
+    return 'Climb management: shorten stride and cap effort.';
+  }
+  if (index >= Math.floor(segmentCount * 0.75) && gradePct <= 1.5) {
+    return 'Progressive push if fueling is on track.';
+  }
+  return 'Steady execution and regular fueling.';
+}
+
+function effortFactor(effort) {
+  return 0.9 + ((Math.max(1, Math.min(10, effort)) - 1) / 9) * 0.3;
+}
+
+function median(list) {
+  if (!Array.isArray(list) || list.length === 0) {
+    return 0;
+  }
+  const sorted = [...list].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  return sorted[mid];
+}
+
+function weightedAverage(items) {
+  const totalWeight = sum(items, (item) => Number(item.weight ?? 0));
+  if (!totalWeight) {
+    return 0;
+  }
+  const total = sum(items, (item) => Number(item.value ?? 0) * Number(item.weight ?? 0));
+  return total / totalWeight;
+}
+
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const r = 6371000;
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * r * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function toRadians(value) {
+  return (value * Math.PI) / 180;
+}
+
+function formatPace(paceMinPerKm) {
+  if (!Number.isFinite(paceMinPerKm) || paceMinPerKm <= 0) {
+    return '0:00/km';
+  }
+  const minutes = Math.floor(paceMinPerKm);
+  const seconds = Math.round((paceMinPerKm - minutes) * 60);
+  return `${minutes}:${String(seconds).padStart(2, '0')}/km`;
+}
+
+function sum(items, selector) {
+  return items.reduce((acc, item) => acc + (Number(selector(item)) || 0), 0);
+}
+
+function round2(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function round4(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 10000) / 10000;
+}
+
+module.exports = { RaceService };

@@ -17,6 +17,8 @@ const { StravaAiClient } = require('./modules/strava/strava.ai.client');
 const { StravaService } = require('./modules/strava/strava.service');
 const { StravaJobs } = require('./modules/strava/strava.jobs');
 const { stravaRoutes } = require('./modules/strava/strava.routes');
+const { RaceService } = require('./modules/race/race.service');
+const { raceRoutes } = require('./modules/race/race.routes');
 const { renderLandingPage } = require('./modules/landing/landing.page');
 
 function resolveCorsOrigin(corsOrigin) {
@@ -69,11 +71,15 @@ function buildApp() {
     env,
     logger: app.log
   });
+  const raceService = new RaceService({
+    stravaRepository,
+  });
   const stravaJobs = new StravaJobs({ stravaService, logger: app.log, env });
 
   app.decorate('authService', authService);
   app.decorate('providerService', providerService);
   app.decorate('stravaService', stravaService);
+  app.decorate('raceService', raceService);
 
   app.register(cors, { origin: resolveCorsOrigin(env.corsOrigin) });
   app.register(authGuardPlugin, { env });
@@ -88,6 +94,7 @@ function buildApp() {
   app.register(authRoutes, { prefix: '/v1' });
   app.register(providerRoutes, { prefix: '/v1' });
   app.register(stravaRoutes, { prefix: '/v1' });
+  app.register(raceRoutes, { prefix: '/v1' });
 
   app.addHook('onReady', async () => {
     stravaJobs.start();
