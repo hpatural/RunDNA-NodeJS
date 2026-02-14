@@ -6,13 +6,14 @@ class RaceService {
   }
 
   async buildPlan(userId, input = {}) {
+    const locale = normalizeLocale(input.locale);
     const athlete = await this.#buildAthleteBaseline(userId);
     const profile = this.#buildCourseProfile(input);
-    const segments = this.#buildSegments(profile, athlete);
-    const hydration = this.#buildHydrationPlan(segments, athlete);
-    const nutrition = this.#buildNutritionPlan(segments, athlete);
-    const pacing = this.#buildPacingGuidance(segments, athlete);
-    const aidStations = this.#buildAidStations(profile, segments, athlete);
+    const segments = this.#buildSegments(profile, athlete, locale);
+    const hydration = this.#buildHydrationPlan(segments, athlete, locale);
+    const nutrition = this.#buildNutritionPlan(segments, athlete, locale);
+    const pacing = this.#buildPacingGuidance(segments, athlete, locale);
+    const aidStations = this.#buildAidStations(profile, segments, athlete, locale);
 
     return {
       source: profile.source,
@@ -120,7 +121,7 @@ class RaceService {
     };
   }
 
-  #buildSegments(profile, athlete) {
+  #buildSegments(profile, athlete, locale) {
     const segmentKm = profile.distanceKm <= 20 ? 2 : profile.distanceKm <= 45 ? 3 : 5;
     const segmentCount = Math.max(1, Math.ceil(profile.distanceKm / segmentKm));
     const defaultGainPerKm = profile.distanceKm > 0 ? profile.elevationGainM / profile.distanceKm : 0;
@@ -154,13 +155,13 @@ class RaceService {
         estimatedDurationMin: Math.round(estimatedDurationMin),
         effort,
         terrain,
-        strategy: strategyForSegment({ index, segmentCount, gradePct }),
+        strategy: strategyForSegment({ index, segmentCount, gradePct, locale }),
       });
     }
     return segments;
   }
 
-  #buildHydrationPlan(segments, athlete) {
+  #buildHydrationPlan(segments, athlete, locale) {
     const baseMlPerHour = athlete.level === 'advanced' ? 650 : athlete.level === 'intermediate' ? 600 : 550;
     const totalMl = Math.round(
       sum(segments, (segment) => (segment.estimatedDurationMin / 60) * baseMlPerHour * effortFactor(segment.effort))
@@ -187,12 +188,12 @@ class RaceService {
 
     return {
       totalMl,
-      guideline: `${Math.round(baseMlPerHour)} ml/h adjusted by effort`,
+      guideline: formatHydrationGuideline(locale, Math.round(baseMlPerHour)),
       stops,
     };
   }
 
-  #buildNutritionPlan(segments, athlete) {
+  #buildNutritionPlan(segments, athlete, locale) {
     const carbsPerHour = athlete.level === 'advanced' ? 80 : athlete.level === 'intermediate' ? 65 : 50;
     const totalHours = sum(segments, (segment) => segment.estimatedDurationMin) / 60;
     const totalCarbsG = Math.round(totalHours * carbsPerHour);
@@ -217,12 +218,12 @@ class RaceService {
     }
     return {
       totalCarbsG,
-      guideline: `${carbsPerHour} g carbs/h`,
+      guideline: formatNutritionGuideline(locale, carbsPerHour),
       feeds,
     };
   }
 
-  #buildPacingGuidance(segments, athlete) {
+  #buildPacingGuidance(segments, athlete, locale) {
     const distanceKm = sum(segments, (segment) => segment.distanceKm);
     const conservativeUntilKm = round2(distanceKm * 0.15);
     const pushFromKm = round2(distanceKm * (athlete.level === 'advanced' ? 0.72 : 0.82));
@@ -232,7 +233,7 @@ class RaceService {
       .map((segment) => ({
         startKm: segment.startKm,
         endKm: segment.endKm,
-        reason: 'Steep climb: protect heart rate and shorten stride.',
+        reason: t(locale, 'slow_zone_reason'),
       }));
     const keyPushZones = segments
       .filter((segment) => segment.avgGradePct <= 1.2 && segment.endKm >= pushFromKm)
@@ -240,7 +241,7 @@ class RaceService {
       .map((segment) => ({
         startKm: segment.startKm,
         endKm: segment.endKm,
-        reason: 'Runnable section: progressive acceleration possible.',
+        reason: t(locale, 'push_zone_reason'),
       }));
     const paceByTerrain = buildTerrainPaces(athlete);
 
@@ -251,14 +252,14 @@ class RaceService {
       keySlowZones,
       keyPushZones,
       notes: [
-        'Start controlled for the first 15% to preserve glycogen.',
-        'Keep fueling before you feel empty.',
-        'Use climbs to manage effort, not to chase pace.',
+        t(locale, 'note_start_controlled'),
+        t(locale, 'note_keep_fueling'),
+        t(locale, 'note_manage_climbs'),
       ],
     };
   }
 
-  #buildAidStations(profile, segments, athlete) {
+  #buildAidStations(profile, segments, athlete, locale) {
     const totalDistanceKm = profile.distanceKm;
     if (!Number.isFinite(totalDistanceKm) || totalDistanceKm <= 0) {
       return [];
@@ -269,7 +270,7 @@ class RaceService {
     for (let km = everyKm; km < totalDistanceKm; km += everyKm) {
       candidates.push({
         atKm: round2(km),
-        reason: 'Periodic refill point',
+        reason: t(locale, 'aid_periodic'),
       });
     }
 
@@ -277,7 +278,7 @@ class RaceService {
       if (segment.avgGradePct >= 4.5) {
         candidates.push({
           atKm: round2(segment.endKm),
-          reason: 'Top of climb transition',
+          reason: t(locale, 'aid_top_climb'),
         });
       }
     }
@@ -287,7 +288,7 @@ class RaceService {
       for (const peak of peaks) {
         candidates.push({
           atKm: peak.atKm,
-          reason: 'Natural terrain high point',
+          reason: t(locale, 'aid_terrain_high'),
         });
       }
     }
@@ -308,6 +309,48 @@ class RaceService {
       carbsG: carbs,
     }));
   }
+}
+
+function normalizeLocale(raw) {
+  const value = String(raw ?? '').toLowerCase();
+  return value.startsWith('fr') ? 'fr' : 'en';
+}
+
+function t(locale, key) {
+  const dict = locale === 'fr'
+    ? {
+        slow_zone_reason: "Montee raide: protege la frequence cardiaque et raccourcis la foulee.",
+        push_zone_reason: 'Section roulante: acceleration progressive possible.',
+        note_start_controlled: 'Depart controle sur les 15% initiaux pour preserver le glycogene.',
+        note_keep_fueling: "Hydrate-toi et mange avant d'avoir un coup de mou.",
+        note_manage_climbs: "Utilise les montees pour gerer l'effort, pas pour chasser l'allure.",
+        aid_periodic: 'Ravito periodique',
+        aid_top_climb: 'Transition en haut de montee',
+        aid_terrain_high: 'Point haut naturel du terrain',
+      }
+    : {
+        slow_zone_reason: 'Steep climb: protect heart rate and shorten stride.',
+        push_zone_reason: 'Runnable section: progressive acceleration possible.',
+        note_start_controlled: 'Start controlled for the first 15% to preserve glycogen.',
+        note_keep_fueling: 'Keep fueling before you feel empty.',
+        note_manage_climbs: 'Use climbs to manage effort, not to chase pace.',
+        aid_periodic: 'Periodic refill point',
+        aid_top_climb: 'Top of climb transition',
+        aid_terrain_high: 'Natural terrain high point',
+      };
+  return dict[key] ?? key;
+}
+
+function formatHydrationGuideline(locale, mlPerHour) {
+  return locale === 'fr'
+    ? `${mlPerHour} ml/h ajuste selon l'effort`
+    : `${mlPerHour} ml/h adjusted by effort`;
+}
+
+function formatNutritionGuideline(locale, carbsPerHour) {
+  return locale === 'fr'
+    ? `${carbsPerHour} g glucides/h`
+    : `${carbsPerHour} g carbs/h`;
 }
 
 function parseGpxTrackPoints(gpx) {
@@ -465,17 +508,25 @@ function resolveEffort(gradePct, level) {
   return value;
 }
 
-function strategyForSegment({ index, segmentCount, gradePct }) {
+function strategyForSegment({ index, segmentCount, gradePct, locale }) {
   if (index <= Math.max(1, Math.floor(segmentCount * 0.15))) {
-    return 'Controlled start, keep breathing easy.';
+    return locale === 'fr'
+      ? 'Depart controle, respiration facile.'
+      : 'Controlled start, keep breathing easy.';
   }
   if (gradePct >= 5) {
-    return 'Climb management: shorten stride and cap effort.';
+    return locale === 'fr'
+      ? "Gestion de montee: raccourcis la foulee et plafonne l'effort."
+      : 'Climb management: shorten stride and cap effort.';
   }
   if (index >= Math.floor(segmentCount * 0.75) && gradePct <= 1.5) {
-    return 'Progressive push if fueling is on track.';
+    return locale === 'fr'
+      ? "Acceleration progressive si l'hydratation/nutrition est bien tenue."
+      : 'Progressive push if fueling is on track.';
   }
-  return 'Steady execution and regular fueling.';
+  return locale === 'fr'
+    ? 'Execution reguliere et ravitaillement constant.'
+    : 'Steady execution and regular fueling.';
 }
 
 function effortFactor(effort) {

@@ -4,7 +4,11 @@ async function raceRoutes(fastify) {
   fastify.post('/race/plan', {
     preHandler: [fastify.authenticate],
   }, async (request) => {
-    return raceService.buildPlan(request.user.id, request.body ?? {});
+    const locale = request.body?.locale ?? request.headers['accept-language'];
+    return raceService.buildPlan(request.user.id, {
+      ...(request.body ?? {}),
+      locale,
+    });
   });
 }
 
