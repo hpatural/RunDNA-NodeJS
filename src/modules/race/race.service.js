@@ -7,10 +7,11 @@ class RaceService {
 
   async buildPlan(userId, input = {}) {
     const locale = normalizeLocale(input.locale);
+    const raceContext = buildRaceContext(input);
     const athlete = await this.#buildAthleteBaseline(userId, input);
     const profile = this.#buildCourseProfile(input);
-    const baseSegments = this.#buildSegments(profile, athlete, locale);
-    const segments = this.#attachEnergyAndFuelTargets(baseSegments, athlete);
+    const baseSegments = this.#buildSegments(profile, athlete, locale, raceContext);
+    const segments = this.#attachEnergyAndFuelTargets(baseSegments, athlete, raceContext);
     const hydration = this.#buildHydrationPlan(segments, athlete, locale);
     const nutrition = this.#buildNutritionPlan(segments, athlete, locale);
     const pacing = this.#buildPacingGuidance(segments, athlete, locale);
@@ -41,7 +42,14 @@ class RaceService {
             enduranceScore: athlete.enduranceScore
           })
         ),
+        confidenceScore: computePlanConfidence({
+          hasGpx: profile.source === 'gpx',
+          activitiesSampleCount: athlete.activitiesSampleCount,
+          hasWeight: Number.isFinite(Number(input?.weightKg)),
+          hasWeather: Number.isFinite(Number(input?.temperatureC)) || Number.isFinite(Number(input?.humidityPct))
+        }),
       },
+      context: raceContext,
       pacing,
       hydration,
       nutrition,
@@ -123,6 +131,7 @@ class RaceService {
       enduranceDecayRatio: round3(enduranceDecayRatio),
       runnerType,
       estimatedWeightKg: round1(estimatedWeightKg),
+      activitiesSampleCount: valid.length,
     };
   }
 
@@ -171,7 +180,7 @@ class RaceService {
     };
   }
 
-  #buildSegments(profile, athlete, locale) {
+  #buildSegments(profile, athlete, locale, raceContext) {
     const bounds = buildAdaptiveSegmentBounds(profile);
     const synthetic = profile.points.length > 1
       ? null
@@ -198,6 +207,7 @@ class RaceService {
         raceDistanceKm: profile.distanceKm,
         progressRatio,
         gradePct,
+        raceContext,
       });
       const estimatedDurationMin = targetPaceMinPerKm * distanceKm;
       const effort = resolveEffort(gradePct, athlete.level);
@@ -220,7 +230,7 @@ class RaceService {
     return segments;
   }
 
-  #attachEnergyAndFuelTargets(segments, athlete) {
+  #attachEnergyAndFuelTargets(segments, athlete, raceContext) {
     const carbCapPerHour = athlete.level === 'advanced' ? 90 : athlete.level === 'intermediate' ? 75 : 60;
     const enriched = [];
     let minuteCursor = 0;
@@ -228,7 +238,8 @@ class RaceService {
       const durationMin = Math.max(1, Number(segment.estimatedDurationMin ?? 0));
       const durationHr = durationMin / 60;
       const met = metForSegment(segment);
-      const caloriesKcal = met * athlete.estimatedWeightKg * durationHr;
+      const weatherEnergyFactor = 1 + (Math.max(0, raceContext.temperatureC - 16) * 0.0035);
+      const caloriesKcal = met * athlete.estimatedWeightKg * durationHr * weatherEnergyFactor;
       const carbOxidationRatio = 0.45 + ((Math.max(1, Math.min(10, segment.effort)) - 1) / 9) * 0.35;
       const carbBurnG = (caloriesKcal * carbOxidationRatio) / 4;
       const carbTargetG = Math.min(
@@ -239,9 +250,13 @@ class RaceService {
         ? Math.max(0, Number(segment.elevationGainM ?? 0) / segment.distanceKm)
         : 0;
       const hydrationRateMlPerHour = clamp(
-        420 + (segment.effort * 30) + (climbDensity * 0.9),
+        420 +
+          (segment.effort * 30) +
+          (climbDensity * 0.9) +
+          (Math.max(0, raceContext.temperatureC - 14) * 12) +
+          (Math.max(0, raceContext.humidityPct - 50) * 2.1),
         450,
-        980
+        1250
       );
       const hydrationTargetMl = hydrationRateMlPerHour * durationHr;
       const startMinute = minuteCursor;
@@ -631,6 +646,10 @@ function targetPaceForSegment({ athlete, raceDistanceKm, progressRatio, gradePct
     : terrain === 'downhill'
       ? (level === 'advanced' ? 0.9 : level === 'intermediate' ? 0.93 : 0.96)
       : 1;
+  const raceContext = arguments[0].raceContext ?? buildRaceContext({});
+  const heatPacePenalty = 1 + (Math.max(0, raceContext.temperatureC - 14) * 0.003);
+  const humidityPacePenalty = 1 + (Math.max(0, raceContext.humidityPct - 55) * 0.0014);
+
   return basePace
     * paceFactor
     * levelFactor
@@ -639,7 +658,9 @@ function targetPaceForSegment({ athlete, raceDistanceKm, progressRatio, gradePct
     * driftFactor
     * startConservative
     * lateRacePenalty
-    * lateRaceBonus;
+    * lateRaceBonus
+    * heatPacePenalty
+    * humidityPacePenalty;
 }
 
 function estimateDistancePenaltyPct({ raceDistanceKm, enduranceScore }) {
@@ -686,6 +707,25 @@ function resolveRunnerType({ enduranceScore, speedScore }) {
     return 'speed';
   }
   return 'balanced';
+}
+
+function buildRaceContext(input) {
+  const rawTemp = Number(input?.temperatureC);
+  const rawHumidity = Number(input?.humidityPct);
+  const temperatureC = Number.isFinite(rawTemp) ? clamp(rawTemp, -10, 45) : 18;
+  const humidityPct = Number.isFinite(rawHumidity) ? clamp(rawHumidity, 5, 100) : 55;
+  return {
+    temperatureC: round1(temperatureC),
+    humidityPct: round1(humidityPct),
+  };
+}
+
+function computePlanConfidence({ hasGpx, activitiesSampleCount, hasWeight, hasWeather }) {
+  let score = hasGpx ? 62 : 52;
+  score += clamp((Number(activitiesSampleCount ?? 0) / 90) * 26, 0, 26);
+  if (hasWeight) score += 6;
+  if (hasWeather) score += 6;
+  return Math.round(clamp(score, 20, 96));
 }
 
 function paceFactorFromGrade(gradePct) {
